@@ -1,0 +1,334 @@
+openapi: 3.0.3
+info:
+  title: API Consumers
+  version: 0.1.0-draft
+  description: |
+    Identidad del consumidor: una credencial (App ID / App Key) por namespace, su alta, baja y rotación.
+    Es el **único** servicio que escribe credenciales en Vault (`apim-<tier>/consumers/<ns>/credentials`, KV v2).
+    No escribe en Git ni en los clusters. Spec: ../README.md · ADR-api-consumers-y-subscriber-sin-estado.md
+    (D1, D3, D4, D5) · ADR-gitops-apis-y-boveda.md §6.
+
+    **Nunca devuelve ni registra el App Key**, y **no lo lee de Vault**: lo genera (o lo importa de 3scale) y lo
+    escribe. Su policy es `create/update` sobre `data/consumers/*`, `read` sobre `metadata/consumers/*` y
+    `create` (con `cas`) sobre `data/index/*`; sin `delete` ni `destroy`.
+
+    **Sin estado propio.** El estado del consumidor y de la rotación vive en la `custom_metadata` del secreto en
+    Vault (`app_id`, sigla, owner, `state`, `created_at`, `idempotency_key`, `request_hash`, `rotation_*`).
+    Unicidad atómica con índices escritos con `cas=0`: `index/app-ids/<app_id>` y `index/key-fp/<sha256(app_key)>`
+    (colisión de keys importadas, H-03).
+
+    **Rotación coordinada con el API Subscriber** (D4): (1) se fija la versión N vigente; (2) el Subscriber abre el
+    solapamiento (`-prev` fijados a N) y confirma `SecretSynced`; (3) recién ahí se escribe la versión N+1 con
+    `cas=N` y se pide el refresh de los Secrets principales; (4) el consumidor adopta la key nueva y se completa;
+    el Subscriber cierra el solapamiento. Después de (3) no hay abort: se completa y, si hace falta, se rota de
+    nuevo (roll-forward). El avance lo hace la réplica líder (`Lease` de Kubernetes) a partir del estado en la
+    metadata de Vault, con el callback del API Subscriber o, si no llega, por poll de su operación.
+
+    **Convivencia con 3scale:** si `threescale.syncCredentials` es true, alta, rotación y baja también actualizan
+    la aplicación de 3scale del proyecto.
+servers:
+  - url: https://api-consumers.apim.<dominio-interno>
+security:
+  - oidc: []
+tags:
+  - name: consumers
+  - name: rotations
+paths:
+  /v1/consumers:
+    post:
+      tags: [consumers]
+      summary: Alta de un namespace consumidor. Genera App ID/App Key en Vault, o los importa de 3scale.
+      description: |
+        Lo invoca el flujo de alta de proyecto (Null en EKS, DevOps Connect / DevSecOps on-prem) al crear el namespace.
+        Sincrónica: al responder, la credencial está en Vault. La key nace en Vault; ESO la baja al cluster.
+        Misma `Idempotency-Key` y mismo payload = misma respuesta (200); con otro payload = 422.
+      operationId: createConsumer
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConsumerRequest' }
+      responses:
+        '201':
+          description: Credencial creada. Incluye el ExternalSecret secret-apim renderizado para que el flujo de onboarding lo commitee (ADR-gitops §5.4, opción C-a).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Consumer' }
+        '200':
+          description: Reintento idempotente de un alta ya hecha.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Consumer' }
+        '409':
+          description: El namespace ya tiene credencial, o la key importada colisiona con la de otro consumidor.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422':
+          description: Payload inválido, o la misma Idempotency-Key con otro payload.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        default: { $ref: '#/components/responses/Problem' }
+  /v1/consumers/{namespace}:
+    parameters:
+      - $ref: '#/components/parameters/Namespace'
+    get:
+      tags: [consumers]
+      summary: Referencia de la credencial (App ID, path y versión en Vault, estado). Nunca el App Key. La usa el API Subscriber para el label app-id.
+      operationId: getConsumer
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Consumer' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [consumers]
+      summary: Baja del consumidor. Escribe una versión tombstone (sin app_key) y state=revoked; las versiones previas quedan para auditoría.
+      description: |
+        Sincrónica. Antes consulta al API Subscriber (`GET /v1/subscriptions?consumerNamespace=`): con
+        suscripciones vivas, 409. Con una rotación en curso, 409.
+      operationId: deleteConsumer
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Revocado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Consumer' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Tiene suscripciones vivas o una rotación en curso.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503': { $ref: '#/components/responses/DependencyUnavailable' }
+  /v1/consumers/{namespace}/secret-apim:
+    parameters:
+      - $ref: '#/components/parameters/Namespace'
+    get:
+      tags: [consumers]
+      summary: ExternalSecret secret-apim renderizado (mismo que devuelve el alta). Para reintentos del flujo de onboarding.
+      operationId: getSecretApim
+      responses:
+        '200':
+          description: OK
+          content:
+            application/yaml:
+              schema: { type: string }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/consumers/{namespace}/rotations:
+    parameters:
+      - $ref: '#/components/parameters/Namespace'
+    post:
+      tags: [rotations]
+      summary: Inicia una rotación coordinada con el API Subscriber (pasos 1 a 3 de D4) y la deja en AwaitingConsumer.
+      description: |
+        Asíncrona: responde 202 con la rotación y `Location`; el avance se consulta en el recurso o llega por callback.
+        Si el consumidor no tiene suscripciones vivas, el solapamiento termina sin commit y la key nueva se escribe igual.
+      operationId: startRotation
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                callbackUrl: { type: string, format: uri }
+      responses:
+        '202':
+          description: Rotación aceptada.
+          headers:
+            Location:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Rotation' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Ya hay una rotación en curso, o el consumidor está revocado.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503': { $ref: '#/components/responses/DependencyUnavailable' }
+      callbacks:
+        rotationState:
+          '{$request.body#/callbackUrl}':
+            post:
+              summary: Push en cada cambio de estado relevante (AwaitingConsumer, Completed, Aborted, Failed). At-least-once; deduplicar por id + state.
+              requestBody:
+                required: true
+                content:
+                  application/json:
+                    schema: { $ref: '#/components/schemas/Rotation' }
+              responses:
+                '2XX':
+                  description: Recibido.
+  /v1/consumers/{namespace}/rotations/{rotationId}:
+    parameters:
+      - $ref: '#/components/parameters/Namespace'
+      - name: rotationId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [rotations]
+      operationId: getRotation
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Rotation' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [rotations]
+      summary: Completa (el consumidor ya usa la key nueva; el Subscriber cierra el solapamiento) o aborta (solo antes de escribir la key nueva).
+      operationId: updateRotation
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action: { type: string, enum: [complete, abort] }
+      responses:
+        '202':
+          description: Aceptado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Rotation' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: |
+            complete fuera de AwaitingConsumer, o abort después de KeyWritten (la key vieja ya no es la vigente y
+            no se puede restaurar sin leerla: completar y, si hace falta, rotar de nuevo).
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+components:
+  securitySchemes:
+    oidc:
+      type: oauth2
+      description: Client credentials (Null, DevOps Connect, pipeline de DevSecOps, API Subscriber). Autorización por sigla. A validar con Seguridad.
+      flows:
+        clientCredentials:
+          tokenUrl: https://<idp>/token
+          scopes:
+            apim.consumers.write: Alta, baja y rotación de credenciales
+            apim.read: Lectura (incluye al API Subscriber)
+  parameters:
+    Namespace:
+      name: namespace
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/Namespace' }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Clave de idempotencia (p. ej. RITM del alta). Queda en la custom_metadata del secreto junto con el hash del pedido.
+      schema: { type: string, maxLength: 200 }
+  responses:
+    NotFound:
+      description: No existe.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    DependencyUnavailable:
+      description: Vault, el API Subscriber o 3scale no disponibles; reintentar con la misma Idempotency-Key.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Problem:
+      description: Error (RFC 7807).
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+  schemas:
+    Namespace:
+      type: string
+      pattern: '^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$'
+    SyncState:
+      type: string
+      enum: [NotApplicable, Pending, InSync, Failed]
+    ConsumerRequest:
+      type: object
+      required: [namespace, sigla, tier]
+      properties:
+        namespace: { $ref: '#/components/schemas/Namespace' }
+        sigla: { type: string }
+        tier: { type: string, enum: [nonprd, prd] }
+        owner: { type: string }
+        servicenowRef: { type: string }
+        importFrom3scale:
+          type: object
+          description: Migración. Toma App ID/App Key existentes de 3scale en lugar de generarlos (el consumidor no cambia nada). Se verifica que la key no colisione con otra (índice key-fp).
+          properties:
+            tenant: { type: string }
+            applicationId: { type: string }
+        threescale:
+          type: object
+          description: Convivencia. Si syncCredentials es true, la credencial se escribe en la aplicación de 3scale del proyecto (alta, rotación y baja).
+          properties:
+            syncCredentials: { type: boolean, default: false }
+            tenant: { type: string }
+            applicationId: { type: string }
+    Consumer:
+      type: object
+      properties:
+        namespace: { $ref: '#/components/schemas/Namespace' }
+        sigla: { type: string }
+        tier: { type: string }
+        owner: { type: string }
+        appId: { type: string, pattern: '^[a-f0-9]{8}$' }
+        vaultPath: { type: string, example: apim-prd/consumers/sigla-x-prd/credentials }
+        vaultVersion: { type: integer, description: Versión vigente de la key en KV v2 (current_version). }
+        state: { type: string, enum: [Active, Rotating, Revoked] }
+        origin: { type: string, enum: [generated, 3scale-import] }
+        createdAt: { type: string, format: date-time }
+        rotatedAt: { type: string, format: date-time }
+        rotationId: { type: string, description: 'Rotación en curso, si la hay.' }
+        credentialSync:
+          type: object
+          properties:
+            threescale: { $ref: '#/components/schemas/SyncState' }
+        secretApimManifest: { type: string, description: ExternalSecret secret-apim renderizado (solo en la respuesta del alta). }
+    Rotation:
+      type: object
+      properties:
+        id: { type: string }
+        namespace: { $ref: '#/components/schemas/Namespace' }
+        state:
+          type: string
+          description: |
+            Requested → OverlapOpening (Subscriber abre los -prev fijados a pinnedVersion) → KeyWritten (versión nueva
+            en Vault) → Refreshing (Secrets principales) → AwaitingConsumer → Completing (Subscriber cierra los -prev)
+            → Completed. Abort solo desde Requested u OverlapOpening (→ Aborting → Aborted). Failed con error.
+          enum: [Requested, OverlapOpening, KeyWritten, Refreshing, AwaitingConsumer, Completing, Completed, Aborting, Aborted, Failed]
+        pinnedVersion: { type: integer, description: Versión de KV v2 que leen los -prev (la key anterior). }
+        newVersion: { type: integer, description: Versión de KV v2 con la key nueva. }
+        subscriberOperationId: { type: string, description: Operación del API Subscriber en curso (abrir o cerrar el solapamiento). }
+        deadline: { type: string, format: date-time, description: 'Si no se completa antes, se alerta; nunca se cierra sola.' }
+        startedAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        error: { $ref: '#/components/schemas/Problem' }
+    Problem:
+      type: object
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }

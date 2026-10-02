@@ -1,0 +1,81 @@
+{{- $a := .Values.apiConsumers -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "apicon.name" . }}
+  namespace: {{ include "apicon.ns" . }}
+  labels:
+    {{- include "apicon.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "20"
+spec:
+  # Sin estado propio (metadata de Vault). MVP: 1 réplica, porque las rotaciones en curso las avanza el proceso que
+  # las aceptó (o el que arranca, con recover). Con más réplicas hace falta un Lease (pendiente).
+  replicas: {{ $a.replicas }}
+  strategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "apicon.selector" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "apicon.labels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "apicon.name" . }}
+      {{- with $a.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: {{ $a.podSecurity.runAsNonRoot }}
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: api-consumers
+          image: "{{ $a.image.repository }}:{{ $a.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ $a.image.pullPolicy }}
+          ports:
+            - {name: http, containerPort: 8080, protocol: TCP}
+          envFrom:
+            - configMapRef: {name: api-consumers-env}
+          env:
+            - {name: HOME, value: /tmp}
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 20
+          resources:
+            {{- toYaml $a.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            - {name: secrets, mountPath: /etc/api-consumers/secrets, readOnly: true}
+      volumes:
+        - {name: tmp, emptyDir: {}}
+        # Un archivo APICON_<CAMPO> por key (pydantic-settings secrets_dir), fuera del entorno del proceso.
+        # optional: cada key puede faltar según el modo (approle/token/kubernetes).
+        - name: secrets
+          secret:
+            secretName: {{ include "apicon.secretName" . }}
+            defaultMode: 0440
+            optional: true
+            items:
+              {{- range $k := list "api_tokens" "callback_secret" "vault_role_id" "vault_secret_id" "vault_token" "subscriber_url" "subscriber_token" }}
+              - {key: {{ $k }}, path: {{ printf "APICON_%s" (upper $k) }}}
+              {{- end }}
+      {{- with $a.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $a.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

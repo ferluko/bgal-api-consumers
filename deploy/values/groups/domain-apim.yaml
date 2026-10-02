@@ -1,0 +1,11 @@
+# Capa 4 — clusters de APIM (on-prem). Vault corporativo (HCP) con auth de Kubernetes.
+apiConsumers:
+  vault:
+    addr: https://vault.bancogalicia.com.ar       # TODO: confirmar con el equipo de Vault (mounts/namespace)
+    auth: kubernetes
+    k8sRole: api-consumers
+  secrets:
+    externalSecret:
+      enabled: true
+      storeRef: {kind: ClusterSecretStore, name: vault-backend}   # store de plataforma (gitops/charts/external-secrets)
+      path: ocp/apim-toolkit/api-consumers

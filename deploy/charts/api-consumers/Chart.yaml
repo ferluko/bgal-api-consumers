@@ -1,0 +1,23 @@
+apiVersion: v2
+name: api-consumers
+description: |
+  API Consumers (MVP) del toolkit de APIM sobre Kuadrant.
+  Dueña de la credencial del consumidor (App ID / App Key por namespace) en Vault KV v2: alta, baja y rotación
+  coordinada con el API Subscriber. Escribe con check-and-set y nunca lee keys; sin estado propio (metadata de Vault).
+
+  Values: misma jerarquía de 7 capas que gitops/ (README "Jerarquía de values (Helm)"):
+    values.yaml → values/groups/all → tier-<X> → domain-<X> → env-<X> → profiles/apim-toolkit → clusters/<name>
+
+  Sync waves:
+    wave=0   Namespace
+    wave=5   ServiceAccount (+ TokenReview si Vault usa auth de Kubernetes)
+    wave=10  ExternalSecret con los secretos propios (tokens de la API, credencial de Vault, token del API Subscriber)
+    wave=15  ConfigMap
+    wave=20  Deployment
+    wave=25  Service + Route
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords: [apim, kuadrant, vault, credentials]
+maintainers:
+  - name: arquitectura-cloud

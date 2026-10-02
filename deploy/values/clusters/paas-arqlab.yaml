@@ -1,0 +1,14 @@
+# Capa 7 — paas-arqlab (máxima prioridad). Bloque cluster: igual que gitops/values/clusters/paas-arqlab.yaml.
+cluster:
+  name: paas-arqlab
+  baseDomain: bancogalicia.com.ar
+  env: lab
+  domain: lab
+  tier: lower
+  site: pg
+  prod: false
+
+# URL y token del API Subscriber: en el Secret api-consumers-secrets (lab-secret.sh).
+apiConsumers:
+  route:
+    ingressDomain: apps.paas-arqlab.bancogalicia.com.ar

@@ -1,0 +1,6 @@
+# Capa 6 — profile apim-toolkit (Publisher/Subscriber/Consumers/Register comparten namespace y convenciones).
+apiConsumers:
+  namespace: apim-toolkit
+  createNamespace: true
+  route:
+    enabled: true

@@ -1,0 +1,6 @@
+# Capa 3 — productivo (BCRA): mount apim-prd, store vault-apim-consumer-prd.
+apiConsumers:
+  tier: prd
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {memory: 256Mi}

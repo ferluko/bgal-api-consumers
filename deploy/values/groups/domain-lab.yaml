@@ -1,0 +1,10 @@
+# Capa 4 — dominio lab (paas-arqlab): Vault de lab (vault-dev) dentro del cluster, AppRole del kit.
+apiConsumers:
+  vault:
+    addr: http://vault.apim-vault-dev.svc:8200
+    auth: approle                                 # lab: rol apim-subscriber-nonprd del kit (falta un rol con la policy de D3)
+    verify: false
+  secrets:
+    externalSecret:
+      enabled: false
+    existingSecret: api-consumers-secrets         # lo crea deploy/scripts/lab-secret.sh (no va a Git)

@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "api-consumers"
+version = "0.1.0"
+description = "MVP de la API Consumers (credencial del consumidor en Vault, sin leer keys) — Banco Galicia"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn>=0.29",
+  "pydantic>=2.6",
+  "pydantic-settings>=2.2",
+  "pyyaml>=6.0",
+  "hvac>=2.1",
+  "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.4", "openapi-spec-validator>=0.7"]
+
+[project.scripts]
+api-consumers = "api_consumers.main:run"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S"]
+ignore = ["S101", "S603", "S607", "B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S105", "S106", "S311"]

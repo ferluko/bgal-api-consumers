@@ -1,0 +1,5 @@
+API Consumers {{ .Chart.AppVersion }} en {{ include "apicon.ns" . }} (cluster {{ .Values.cluster.name | default "?" }}, tier {{ .Values.apiConsumers.tier }}).
+{{- if .Values.apiConsumers.route.enabled }}
+URL: https://{{ include "apicon.routeHost" . }}  (docs: /docs)
+{{- end }}
+Vault: {{ .Values.apiConsumers.vault.addr }} ({{ .Values.apiConsumers.vault.auth }}), mount {{ .Values.apiConsumers.vault.mount | default (printf "apim-%s" .Values.apiConsumers.tier) }}

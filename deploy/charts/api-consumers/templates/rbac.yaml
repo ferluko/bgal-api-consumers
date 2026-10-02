@@ -1,0 +1,30 @@
+# La API Consumers no lee ni escribe nada en el cluster: el ServiceAccount solo sirve para autenticarse en Vault.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "apicon.name" . }}
+  namespace: {{ include "apicon.ns" . }}
+  labels:
+    {{- include "apicon.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+{{- if eq .Values.apiConsumers.vault.auth "kubernetes" }}
+---
+# Vault (auth de Kubernetes) valida el JWT del SA con TokenReview.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: api-consumers-tokenreview-{{ include "apicon.ns" . }}
+  labels:
+    {{- include "apicon.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "apicon.name" . }}
+    namespace: {{ include "apicon.ns" . }}
+{{- end }}

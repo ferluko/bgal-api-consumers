@@ -1,0 +1,36 @@
+{{- $a := .Values.apiConsumers -}}
+{{- $c := $a.config -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-consumers-env
+  namespace: {{ include "apicon.ns" . }}
+  labels:
+    {{- include "apicon.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "15"
+data:
+  APICON_TIER: {{ $a.tier | quote }}
+  APICON_SECRETS_DIR: "/etc/api-consumers/secrets"
+  APICON_VAULT_MODE: "hvac"
+  APICON_VAULT_ADDR: {{ $a.vault.addr | quote }}
+  APICON_VAULT_AUTH: {{ $a.vault.auth | quote }}
+  APICON_VAULT_K8S_ROLE: {{ $a.vault.k8sRole | quote }}
+  APICON_VAULT_K8S_MOUNT: {{ $a.vault.k8sMount | quote }}
+  APICON_VAULT_NAMESPACE: {{ $a.vault.namespace | quote }}
+  APICON_VAULT_MOUNT: {{ $a.vault.mount | quote }}
+  APICON_VAULT_VERIFY: {{ $a.vault.verify | quote }}
+  APICON_INDEX_PREFIX: {{ $a.vault.indexPrefix | quote }}
+  APICON_SUBSCRIBER_MODE: "http"
+  APICON_SUBSCRIBER_VERIFY: {{ $a.subscriber.verify | quote }}
+  APICON_CONSUMER_STORE_KIND: {{ $a.eso.consumerStore.kind | quote }}
+  APICON_CONSUMER_STORE_NAME: {{ $a.eso.consumerStore.name | default (printf "vault-apim-consumer-%s" $a.tier) | quote }}
+  APICON_SECRET_APIM_REFRESH: {{ $a.eso.secretApimRefresh | quote }}
+  APICON_ROTATION_DEADLINE_DAYS: {{ $c.rotationDeadlineDays | quote }}
+  APICON_ROTATION_POLL_S: {{ $c.rotationPollS | quote }}
+  APICON_ROTATION_STEP_TIMEOUT_S: {{ $c.rotationStepTimeoutS | quote }}
+  APICON_THREESCALE_MODE: {{ $c.threescaleMode | quote }}
+  APICON_CALLBACK_RETRIES: {{ $c.callbackRetries | quote }}
+  APICON_WORKER_MODE: {{ $c.workerMode | quote }}
+  APICON_WORKER_THREADS: {{ $c.workerThreads | quote }}
+  APICON_LOG_LEVEL: {{ $c.logLevel | quote }}

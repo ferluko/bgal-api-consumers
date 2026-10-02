@@ -1,0 +1,6 @@
+# Capa 3 — no productivo: mount apim-nonprd, store vault-apim-consumer-nonprd.
+apiConsumers:
+  tier: nonprd
+  resources:
+    requests: {cpu: 50m, memory: 96Mi}
+    limits: {memory: 192Mi}

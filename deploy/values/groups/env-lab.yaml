@@ -1,0 +1,4 @@
+# Capa 5 — entorno lab.
+apiConsumers:
+  config:
+    logLevel: DEBUG

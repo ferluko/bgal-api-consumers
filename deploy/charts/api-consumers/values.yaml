@@ -1,0 +1,87 @@
+# =============================================================================
+# Defaults del chart (capa 1). No poner acá nada específico de cluster/entorno:
+# usar deploy/values/{groups,profiles,clusters}/ (misma regla de oro que gitops/README).
+# =============================================================================
+
+# Bloque estándar de gitops/values/clusters/<name>.yaml (labels gitops.bancogalicia.com.ar/*)
+cluster:
+  name: ""
+  baseDomain: bancogalicia.com.ar
+  env: ""
+  domain: ""
+  tier: ""
+  site: ""
+  prod: false
+
+apiConsumers:
+  namespace: apim-toolkit
+  createNamespace: true
+
+  image:
+    repository: quay.io/ferlukobgal/bgal-api-consumers
+    tag: ""                                       # default: .Chart.AppVersion
+    pullPolicy: IfNotPresent
+  imagePullSecrets: []
+
+  # Sin estado propio (metadata de Vault). MVP: 1 réplica hasta tener Lease para las rotaciones en curso.
+  replicas: 1
+
+  resources:
+    requests: {cpu: 50m, memory: 96Mi}
+    limits: {memory: 192Mi}
+
+  tier: nonprd                                    # nonprd | prd → mount apim-<tier>, store vault-apim-consumer-<tier>
+
+  config:
+    workerMode: background
+    workerThreads: 4
+    rotationDeadlineDays: 7
+    rotationPollS: 5
+    rotationStepTimeoutS: 900
+    threescaleMode: disabled                      # disabled | stub
+    callbackRetries: 3
+    logLevel: INFO
+
+  # Vault: escribe credenciales con check-and-set y NUNCA lee valores (ADR API Consumers D3). Policy mínima:
+  #   data/consumers/*: create, update · metadata/consumers/*: read, list, update · sin delete ni destroy
+  vault:
+    addr: ""                                      # REQUERIDO
+    auth: kubernetes                              # kubernetes | approle | token
+    k8sRole: api-consumers
+    k8sMount: kubernetes
+    namespace: ""                                 # namespace de HCP Vault, si aplica
+    mount: ""                                     # default apim-<tier>
+    verify: true
+    indexPrefix: consumers/_index                 # índices de unicidad (app-id, hash de key) con cas=0
+
+  # API Subscriber (ventana de rotación, suscripciones vivas). URL y token en el Secret: subscriber_url, subscriber_token.
+  subscriber:
+    verify: true
+
+  eso:
+    consumerStore: {kind: ClusterSecretStore, name: ""}   # default vault-apim-consumer-<tier> (secret-apim)
+    secretApimRefresh: 5m
+
+  # Secretos propios, materializados por ESO desde el Vault de plataforma (nunca en Git). Se montan como archivos en
+  # /etc/api-consumers/secrets (APICON_SECRETS_DIR). Keys: api_tokens, callback_secret,
+  #   vault_role_id + vault_secret_id (approle) | vault_token (token), subscriber_url, subscriber_token
+  secrets:
+    externalSecret:
+      enabled: true
+      storeRef: {kind: ClusterSecretStore, name: ""}      # REQUERIDO si enabled
+      path: ""                                            # p.ej. ocp/apim-toolkit/api-consumers
+      refreshInterval: 1h
+    existingSecret: ""                            # alternativa a ESO (lab)
+
+  service:
+    port: 8080
+
+  route:
+    enabled: true
+    host: ""                                      # default: api-consumers-<ns>.<ingressDomain>
+    ingressDomain: ""
+
+  podSecurity:
+    runAsNonRoot: true
+  nodeSelector: {}
+  tolerations: []

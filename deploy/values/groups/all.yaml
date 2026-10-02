@@ -1,0 +1,7 @@
+# Capa 2 — todos los clusters donde corre el toolkit de APIM.
+apiConsumers:
+  image:
+    repository: quay.io/ferlukobgal/bgal-api-consumers
+  config:
+    workerMode: background
+    logLevel: INFO

@@ -1,0 +1,11 @@
+{{- include "apicon.validate" . -}}
+{{- if .Values.apiConsumers.createNamespace }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "apicon.ns" . }}
+  labels:
+    {{- include "apicon.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+{{- end }}
