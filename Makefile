@@ -11,7 +11,7 @@ DOMAIN = $(shell awk '/^  domain:/{print $$2; exit}' $(V)/clusters/$(CLUSTER).ya
 ENVN   = $(shell awk '/^  env:/{print $$2; exit}' $(V)/clusters/$(CLUSTER).yaml)
 VALUES = $(foreach f,groups/all groups/tier-$(TIER) groups/domain-$(DOMAIN) groups/env-$(ENVN) profiles/apim-toolkit clusters/$(CLUSTER),$(if $(wildcard $(V)/$(f).yaml),-f $(V)/$(f).yaml))
 
-.PHONY: install test lint fmt run-dev it-vault image push helm-lint helm-template
+.PHONY: helm-install helm-uninstall install test lint fmt run-dev it-vault image push helm-lint helm-template
 
 install:            ## dependencias de desarrollo
 	$(PY) -m pip install -e '.[dev]'
@@ -44,3 +44,11 @@ helm-lint:
 helm-template:      ## render con la jerarquía de 7 capas: make helm-template CLUSTER=paas-arqlab
 	@echo "# capas: $(VALUES)" >&2
 	helm template api-consumers $(CHART) $(VALUES)
+
+NS ?= apim-toolkit
+helm-install:       ## instala/actualiza en el cluster logueado: make helm-install CLUSTER=paas-arqlab
+	@echo "# capas: $(VALUES)" >&2
+	helm upgrade --install api-consumers $(CHART) $(VALUES) -n $(NS) --wait --timeout 5m
+
+helm-uninstall:
+	helm uninstall api-consumers -n $(NS)

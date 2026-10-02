@@ -10,5 +10,7 @@ cluster:
 
 # URL y token del API Subscriber: en el Secret api-consumers-secrets (lab-secret.sh).
 apiConsumers:
+  # El namespace apim-toolkit lo comparten API Subscriber y API Consumers: se crea antes y ningún chart lo declara.
+  createNamespace: false
   route:
     ingressDomain: apps.paas-arqlab.bancogalicia.com.ar
