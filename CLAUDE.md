@@ -36,7 +36,7 @@ Arquitectura: `RHCL-Kuadrant/ADR-api-consumers-y-subscriber-sin-estado.md` (D1, 
 - Imagen (en la Mac, robot de quay `ferlukobgal+para_claudia`): `docker buildx build --platform linux/amd64 -t quay.io/ferlukobgal/bgal-api-consumers:<versión> -f Containerfile --push .`
 
 ## Lab (paas-arqlab)
-Se edita en la Mac → `git push` → `git pull` en darqtesting01. Despliegue vigente: `bgal-api-sub/docs/RUNBOOK-lab-ocp.md` (Helm).
+Se edita en la Mac → `git push` → en darqtesting01, en `/app/bgal-api-consumers`, `git pull origin <rama>` (siempre con el remote: los clones del lab pueden tener también `bgal`, la copia en GHE). Despliegue vigente: `bgal-api-sub/docs/RUNBOOK-lab-ocp.md` (Helm).
 - `deploy/scripts/lab-secret.sh`: Secret `api-consumers-secrets` (AppRole del kit desde `VD_OUT=/root/poc-cred/.out/vault-dev`, token del Subscriber).
 - `deploy/scripts/lab-podman.sh prep|vault|run|status|logs|stop`: en podman en darqtesting01, puerto 18081, `OUT=/root/poc-cred/.out/consumers`; su `api-token` es el `CONSUMERS_TOKEN_FILE` del Subscriber.
 - Vault de lab en modo dev: un reinicio de `vault-0` borra todo (`vault-dev/scripts/recover.sh`). Los consumidores dados de alta por el Subscriber 0.1 no tienen `app_id` en la metadata: el e2e usa `e2e-con-lab`.
