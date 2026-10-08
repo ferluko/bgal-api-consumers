@@ -14,7 +14,13 @@ from api_consumers.vault import MemoryVault
 
 TOKEN = "test-token"
 NS = "sigla-consumidor-qa"
-PATH = f"consumers/{NS}/credentials"
+ENV, TENANT = "QA", "b2c"
+Q = {"environment": ENV, "tenant": TENANT}
+QS = "environment=QA&tenant=b2c"
+# convención de DevSecOps: openshift-<ambiente>/<ns>/secret-apim-<tenant>-v2, claves app_id_<tenant>/app_key_<tenant>
+PATH = f"openshift-qas/{NS}/secret-apim-{TENANT}-v2"
+ID, KEY = "app_id_b2c", "app_key_b2c"
+INDEX = "apim-nonprd/consumers/_index"
 
 
 @pytest.fixture
@@ -58,8 +64,12 @@ def idem() -> dict:
     return {"Idempotency-Key": f"RITM{2000000 + _counter['n']}"}
 
 
+def cred(parts: dict, ns: str = NS, tenant: str = TENANT):
+    return parts["svc"].cred(ns, ENV, tenant)
+
+
 def onboard(client: TestClient, ns: str = NS, key: str | None = None, **extra) -> dict:
-    body = {"namespace": ns, "sigla": "sigla", "tier": "nonprd", **extra}
+    body = {"namespace": ns, "sigla": "sigla", "tier": "nonprd", **Q, **extra}
     r = client.post("/v1/consumers", json=body, headers={"Idempotency-Key": key} if key else idem())
     assert r.status_code == 201, r.text
     return r.json()

@@ -1,12 +1,13 @@
-"""FastAPI: rutas de openapi/consumers.yaml (v0.1.0)."""
+"""FastAPI: rutas de openapi/consumers.yaml (v0.2.0-draft)."""
 
 from __future__ import annotations
 
 import hmac
 import logging
 from contextlib import asynccontextmanager
+from urllib.parse import urlencode
 
-from fastapi import Depends, FastAPI, Header, Request
+from fastapi import Depends, FastAPI, Header, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse
 
@@ -16,7 +17,7 @@ from .errors import Problem
 from .integrations import build_threescale
 from .logging_setup import setup_logging
 from .models import ConsumerRequest, RotationAction, RotationRequest
-from .service import Runner, Service
+from .service import Cred, Runner, Service
 from .subscriber import build_subscriber
 from .vault import build_vault
 
@@ -85,6 +86,15 @@ def create_app(settings: Settings | None = None, service: Service | None = None)
         ok = sv.vault.healthy()
         return JSONResponse({"vault": ok}, status_code=200 if ok else 503)
 
+    def cred(
+        namespace: str,
+        environment: str = Query(min_length=1, max_length=16),
+        tenant: str = Query(pattern="^(b2b|b2c)$"),
+        sv: Service = Depends(svc),
+    ) -> Cred:
+        """La credencial que identifican el namespace, el ambiente y el tenant (query obligatorios)."""
+        return sv.cred(namespace, environment, tenant)
+
     # ----------------------------------------------------------- consumers
     @app.post("/v1/consumers", status_code=201, dependencies=deps, tags=["consumers"])
     def create_consumer(body: ConsumerRequest, idempotency_key: str = IdemKey, sv: Service = Depends(svc)):
@@ -92,44 +102,45 @@ def create_app(settings: Settings | None = None, service: Service | None = None)
         return JSONResponse(view, status_code=status)
 
     @app.get("/v1/consumers/{namespace}", dependencies=deps, tags=["consumers"])
-    def get_consumer(namespace: str, sv: Service = Depends(svc)):
-        return sv.get_consumer(namespace)
+    def get_consumer(c: Cred = Depends(cred), sv: Service = Depends(svc)):
+        return sv.get_consumer(c)
 
     @app.delete("/v1/consumers/{namespace}", dependencies=deps, tags=["consumers"])
-    def delete_consumer(namespace: str, idempotency_key: str = IdemKey, sv: Service = Depends(svc)):
-        return sv.delete_consumer(namespace, idempotency_key)
+    def delete_consumer(c: Cred = Depends(cred), idempotency_key: str = IdemKey, sv: Service = Depends(svc)):
+        return sv.delete_consumer(c, idempotency_key)
 
     @app.get("/v1/consumers/{namespace}/secret-apim", dependencies=deps, tags=["consumers"])
-    def get_secret_apim(namespace: str, sv: Service = Depends(svc)):
-        return PlainTextResponse(sv.secret_apim(namespace), media_type="application/yaml")
+    def get_secret_apim(c: Cred = Depends(cred), sv: Service = Depends(svc)):
+        return PlainTextResponse(sv.secret_apim(c), media_type="application/yaml")
 
     # ----------------------------------------------------------- rotations
     @app.post("/v1/consumers/{namespace}/rotations", status_code=202, dependencies=deps, tags=["rotations"])
     def start_rotation(
-        namespace: str,
         body: RotationRequest | None = None,
+        c: Cred = Depends(cred),
         idempotency_key: str = IdemKey,
         sv: Service = Depends(svc),
     ):
-        view = sv.start_rotation(namespace, body.model_dump(exclude_none=True) if body else {}, idempotency_key)
-        loc = f"/v1/consumers/{namespace}/rotations/{view['id']}"
+        view = sv.start_rotation(c, body.model_dump(exclude_none=True) if body else {}, idempotency_key)
+        query = urlencode({"environment": c.environment, "tenant": c.tenant})
+        loc = f"/v1/consumers/{c.namespace}/rotations/{view['id']}?{query}"
         return JSONResponse(view, status_code=202, headers={"Location": loc})
 
     @app.get("/v1/consumers/{namespace}/rotations/{rotation_id}", dependencies=deps, tags=["rotations"])
-    def get_rotation(namespace: str, rotation_id: str, sv: Service = Depends(svc)):
-        return sv.get_rotation(namespace, rotation_id)
+    def get_rotation(rotation_id: str, c: Cred = Depends(cred), sv: Service = Depends(svc)):
+        return sv.get_rotation(c, rotation_id)
 
     @app.patch(
         "/v1/consumers/{namespace}/rotations/{rotation_id}", status_code=202, dependencies=deps, tags=["rotations"]
     )
     def update_rotation(
-        namespace: str,
         rotation_id: str,
         body: RotationAction,
+        c: Cred = Depends(cred),
         idempotency_key: str = IdemKey,  # noqa: ARG001 (la acción es idempotente por estado)
         sv: Service = Depends(svc),
     ):
-        return JSONResponse(sv.update_rotation(namespace, rotation_id, body.action), status_code=202)
+        return JSONResponse(sv.update_rotation(c, rotation_id, body.action), status_code=202)
 
     return app
 
