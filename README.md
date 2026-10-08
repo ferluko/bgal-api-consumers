@@ -1,14 +1,16 @@
 # bgal-api-consumers — API Consumers (MVP)
 
 MVP en Python de la **API Consumers** del toolkit de APIM sobre Kuadrant (RHCL): la credencial de cada namespace
-consumidor (App ID / App Key) en Vault KV v2, `apim-<tier>/consumers/<ns>/credentials`.
+consumidor (App ID / App Key) en Vault KV v2, con la convención de DevSecOps (06/10 y 07/10):
+`openshift-<ambiente>/<ns>/secret-apim-<tenant>-v2`, claves `app_id_<tenant>` y `app_key_<tenant>`. Una credencial por
+namespace y tenant (`b2b`/`b2c`); el ambiente sale del `environment` del pedido (QA → `qas`).
 
-- **Contrato:** [`openapi/consumers.yaml`](openapi/consumers.yaml), v0.1.0 (copia de `RHCL-Kuadrant/api-toolkit-spec/openapi/consumers.yaml`).
+- **Contrato:** [`openapi/consumers.yaml`](openapi/consumers.yaml), v0.2.0-draft (copia de `RHCL-Kuadrant/api-toolkit-spec/openapi/consumers.yaml`).
 - **Diseño:** `ADR-api-consumers-y-subscriber-sin-estado.md` (D1, D3, D4, D5), en el repo de documentación.
 - **Hermano:** [`bgal-api-sub`](https://github.com/ferluko/bgal-api-sub) (suscripciones; sin acceso a Vault).
 
 ```
-Null / DevOps Connect / DevSecOps ──► API Consumers ──write (cas, sin read)──► Vault KV v2  consumers/<ns>/credentials
+Null / DevOps Connect / DevSecOps ──► API Consumers ──write (cas, sin read)──► Vault KV v2  openshift-<amb>/<ns>/secret-apim-<tenant>-v2
                                           │        └─ metadata: app_id, estado, rotación
                                           │  rotación: fijar vN → abrir ventana → vN+1 → refresh → cerrar
                                           ▼
@@ -23,7 +25,11 @@ Null / DevOps Connect / DevSecOps ──► API Consumers ──write (cas, sin 
 - **La key nunca sale del proceso.** Ni respuestas, ni logs (redacción), ni metadata, ni llamadas al API Subscriber,
   que solo recibe números de versión. Hay un test que la busca en todo eso.
 - **Sin estado propio.** Consumidor y rotación viven en la `custom_metadata` del secreto. Unicidad de App ID y
-  detección de keys duplicadas (H-03) con índices escritos con `cas=0` (`consumers/_index/…` en el lab).
+  detección de keys duplicadas (H-03) con índices escritos con `cas=0` en el mount propio de APIM
+  (`apim-<tier>/consumers/_index/…` en el lab), donde también queda el registro de rotaciones que retoma `recover`.
+- **Identidad de la credencial (0.2.0):** namespace + `environment` + `tenant`. Van en el alta y como query en los
+  recursos del consumidor (`GET /v1/consumers/{ns}?environment=QA&tenant=b2c`). El ExternalSecret del consumidor es
+  `secret-apim-<tenant>`. La ventana de rotación en el API Subscriber (≥ 0.6.0) también es por tenant.
 - **Rotación coordinada (D4):**
   1. Fija la versión vigente N.
   2. El API Subscriber abre la ventana: un `-prev` por suscripción y cluster, fijado a N con `remoteRef.version`.

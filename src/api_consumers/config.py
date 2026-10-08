@@ -11,6 +11,9 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SECRETS_DIR = "/etc/api-consumers/secrets"
+# environment (como lo informa ServiceNow o el alta del namespace) → ambiente de Vault (openshift-<ambiente>)
+VAULT_ENVS = {"dev": "dev", "int": "int", "qa": "qas", "qas": "qas", "prd": "prd"}
+TENANTS = ("b2b", "b2c")
 
 
 class Settings(BaseSettings):
@@ -38,10 +41,16 @@ class Settings(BaseSettings):
     vault_k8s_role: str = "api-consumers"
     vault_k8s_mount: str = "kubernetes"
     vault_namespace: str = ""
-    vault_mount: str = ""  # default: apim-<tier>
     vault_verify: bool = True
-    # Índices de unicidad (app-id, hash de key) escritos con cas=0. Lab: dentro de consumers/ (policy existente);
-    # objetivo del ADR: un prefijo propio (p. ej. "index").
+    # Credencial del consumidor: convención de DevSecOps (06/10 y 07/10). Una por namespace y tenant; el primer
+    # segmento es el mount KV v2 (openshift-<ambiente>). Claves app_id_<tenant> / app_key_<tenant>.
+    credential_path_template: str = "openshift-{env}/{namespace}/secret-apim-{tenant}-v2"
+    app_id_field: str = "app_id_{tenant}"
+    app_key_field: str = "app_key_{tenant}"
+    vault_envs: dict[str, str] = Field(default_factory=lambda: dict(VAULT_ENVS))
+    # Índices de unicidad (app-id, hash de key) y registro de rotaciones, escritos con cas=0 en un mount propio de
+    # APIM (default apim-<tier>). Lab: dentro de consumers/ (policy del kit); objetivo del ADR: un prefijo propio.
+    vault_mount: str = ""  # default: apim-<tier>
     index_prefix: str = "consumers/_index"
 
     # --- API Subscriber (ventana de rotación y suscripciones vivas) --------
@@ -93,6 +102,14 @@ class Settings(BaseSettings):
     @property
     def mount(self) -> str:
         return self.vault_mount or f"apim-{self.tier}"
+
+    @property
+    def index_root(self) -> str:
+        return f"{self.mount}/{self.index_prefix.strip('/')}"
+
+    def vault_env(self, environment: str | None) -> str | None:
+        """openshift-<ambiente> para un environment (QA → qas); None si no está mapeado."""
+        return {k.lower(): v for k, v in self.vault_envs.items()}.get((environment or "").strip().lower())
 
     @property
     def consumer_store(self) -> str:

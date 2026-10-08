@@ -1,16 +1,23 @@
 openapi: 3.0.3
 info:
   title: API Consumers
-  version: 0.1.0-draft
+  version: 0.2.0-draft
   description: |
-    Identidad del consumidor: una credencial (App ID / App Key) por namespace, su alta, baja y rotación.
-    Es el **único** servicio que escribe credenciales en Vault (`apim-<tier>/consumers/<ns>/credentials`, KV v2).
+    Identidad del consumidor: una credencial (App ID / App Key) por namespace **y tenant**, su alta, baja y rotación.
+    Es el **único** servicio que escribe credenciales en Vault, con la convención de DevSecOps (06/10 y 07/10):
+    `openshift-<ambiente>/<namespace>/secret-apim-<tenant>-v2` (KV v2; el primer segmento es el mount), con las
+    claves `app_id_<tenant>` y `app_key_<tenant>`. El ambiente sale del `environment` del pedido (QA → `qas`).
+    Cada recurso de un consumidor se identifica por namespace + `environment` + `tenant` (query).
     No escribe en Git ni en los clusters. Spec: ../README.md · ADR-api-consumers-y-subscriber-sin-estado.md
     (D1, D3, D4, D5) · ADR-gitops-apis-y-boveda.md §6.
 
     **Nunca devuelve ni registra el App Key**, y **no lo lee de Vault**: lo genera (o lo importa de 3scale) y lo
-    escribe. Su policy es `create/update` sobre `data/consumers/*`, `read` sobre `metadata/consumers/*` y
-    `create` (con `cas`) sobre `data/index/*`; sin `delete` ni `destroy`.
+    escribe. Su policy es `create/update` sobre `openshift-<amb>/data/+/secret-apim-*`, `read/list/update` sobre
+    `openshift-<amb>/metadata/...` y `create` (con `cas`) sobre el índice en `apim-<tier>`; sin `delete` ni `destroy`.
+
+    Cambios 0.2.0 (07/10): path de Vault de DevSecOps; credencial por namespace × tenant; `environment` y `tenant`
+    en el alta y como query en los recursos del consumidor; `secret-apim-<tenant>`; la ventana de rotación en el API
+    Subscriber también es por tenant.
 
     **Sin estado propio.** El estado del consumidor y de la rotación vive en la `custom_metadata` del secreto en
     Vault (`app_id`, sigla, owner, `state`, `created_at`, `idempotency_key`, `request_hash`, `rotation_*`).
@@ -75,6 +82,8 @@ paths:
   /v1/consumers/{namespace}:
     parameters:
       - $ref: '#/components/parameters/Namespace'
+      - $ref: '#/components/parameters/Environment'
+      - $ref: '#/components/parameters/Tenant'
     get:
       tags: [consumers]
       summary: Referencia de la credencial (App ID, path y versión en Vault, estado). Nunca el App Key. La usa el API Subscriber para el label app-id.
@@ -111,6 +120,8 @@ paths:
   /v1/consumers/{namespace}/secret-apim:
     parameters:
       - $ref: '#/components/parameters/Namespace'
+      - $ref: '#/components/parameters/Environment'
+      - $ref: '#/components/parameters/Tenant'
     get:
       tags: [consumers]
       summary: ExternalSecret secret-apim renderizado (mismo que devuelve el alta). Para reintentos del flujo de onboarding.
@@ -125,6 +136,8 @@ paths:
   /v1/consumers/{namespace}/rotations:
     parameters:
       - $ref: '#/components/parameters/Namespace'
+      - $ref: '#/components/parameters/Environment'
+      - $ref: '#/components/parameters/Tenant'
     post:
       tags: [rotations]
       summary: Inicia una rotación coordinada con el API Subscriber (pasos 1 a 3 de D4) y la deja en AwaitingConsumer.
@@ -174,6 +187,8 @@ paths:
   /v1/consumers/{namespace}/rotations/{rotationId}:
     parameters:
       - $ref: '#/components/parameters/Namespace'
+      - $ref: '#/components/parameters/Environment'
+      - $ref: '#/components/parameters/Tenant'
       - name: rotationId
         in: path
         required: true
@@ -234,6 +249,17 @@ components:
       in: path
       required: true
       schema: { $ref: '#/components/schemas/Namespace' }
+    Environment:
+      name: environment
+      in: query
+      required: true
+      description: Ambiente de la credencial, como lo informa ServiceNow (QA → openshift-qas).
+      schema: { type: string, example: QA }
+    Tenant:
+      name: tenant
+      in: query
+      required: true
+      schema: { $ref: '#/components/schemas/Tenant' }
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -260,16 +286,21 @@ components:
     Namespace:
       type: string
       pattern: '^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$'
+    Tenant:
+      type: string
+      enum: [b2b, b2c]
     SyncState:
       type: string
       enum: [NotApplicable, Pending, InSync, Failed]
     ConsumerRequest:
       type: object
-      required: [namespace, sigla, tier]
+      required: [namespace, sigla, tier, environment, tenant]
       properties:
         namespace: { $ref: '#/components/schemas/Namespace' }
         sigla: { type: string }
         tier: { type: string, enum: [nonprd, prd] }
+        environment: { type: string, example: QA, description: 'Ambiente del namespace (QA → openshift-qas).' }
+        tenant: { $ref: '#/components/schemas/Tenant' }
         owner: { type: string }
         servicenowRef: { type: string }
         importFrom3scale:
@@ -292,8 +323,11 @@ components:
         sigla: { type: string }
         tier: { type: string }
         owner: { type: string }
+        environment: { type: string }
+        tenant: { $ref: '#/components/schemas/Tenant' }
         appId: { type: string, pattern: '^[a-f0-9]{8}$' }
-        vaultPath: { type: string, example: apim-prd/consumers/sigla-x-prd/credentials }
+        vaultPath: { type: string, example: openshift-qas/sigla-x-qas/secret-apim-b2c-v2 }
+        vaultProperty: { type: string, example: app_key_b2c, description: 'Clave del App Key dentro del secreto (nunca el valor).' }
         vaultVersion: { type: integer, description: Versión vigente de la key en KV v2 (current_version). }
         state: { type: string, enum: [Active, Rotating, Revoked] }
         origin: { type: string, enum: [generated, 3scale-import] }
@@ -304,12 +338,14 @@ components:
           type: object
           properties:
             threescale: { $ref: '#/components/schemas/SyncState' }
-        secretApimManifest: { type: string, description: ExternalSecret secret-apim renderizado (solo en la respuesta del alta). }
+        secretApimManifest: { type: string, description: ExternalSecret secret-apim-<tenant> renderizado (solo en la respuesta del alta). }
     Rotation:
       type: object
       properties:
         id: { type: string }
         namespace: { $ref: '#/components/schemas/Namespace' }
+        environment: { type: string }
+        tenant: { $ref: '#/components/schemas/Tenant' }
         state:
           type: string
           description: |

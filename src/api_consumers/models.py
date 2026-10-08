@@ -25,9 +25,14 @@ class ThreeScaleSync(_Base):
 
 
 class ConsumerRequest(_Base):
+    """Alta de la credencial de un namespace para un ambiente y un tenant (openshift-<ambiente>/<ns>/
+    secret-apim-<tenant>-v2). Un namespace puede tener una por tenant."""
+
     namespace: str = Field(pattern=DNS1123)
     sigla: str = Field(min_length=1)
     tier: Literal["nonprd", "prd"]
+    environment: str = Field(min_length=1, max_length=16)
+    tenant: Literal["b2b", "b2c"]
     owner: str | None = None
     servicenowRef: str | None = None
     importFrom3scale: ImportFrom3scale | None = None

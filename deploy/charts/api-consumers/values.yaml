@@ -50,16 +50,19 @@ apiConsumers:
     k8sRole: api-consumers
     k8sMount: kubernetes
     namespace: ""                                 # namespace de HCP Vault, si aplica
-    mount: ""                                     # default apim-<tier>
     verify: true
-    indexPrefix: consumers/_index                 # índices de unicidad (app-id, hash de key) con cas=0
+    # Credencial del consumidor (convención de DevSecOps): el primer segmento es el mount KV v2.
+    credentialPathTemplate: "openshift-{env}/{namespace}/secret-apim-{tenant}-v2"
+    envs: {dev: dev, int: int, qa: qas, qas: qas, prd: prd}  # environment del pedido → openshift-<ambiente>
+    mount: ""                                     # mount de los índices; default apim-<tier>
+    indexPrefix: consumers/_index                 # índices de unicidad y registro de rotaciones (cas=0)
 
   # API Subscriber (ventana de rotación, suscripciones vivas). URL y token en el Secret: subscriber_url, subscriber_token.
   subscriber:
     verify: true
 
   eso:
-    consumerStore: {kind: ClusterSecretStore, name: ""}   # default vault-apim-consumer-<tier> (secret-apim)
+    consumerStore: {kind: ClusterSecretStore, name: ""}   # default vault-apim-consumer-<tier> (secret-apim-<tenant>); sin mount fijo
     secretApimRefresh: 5m
 
   # Secretos propios, materializados por ESO desde el Vault de plataforma (nunca en Git). Se montan como archivos en

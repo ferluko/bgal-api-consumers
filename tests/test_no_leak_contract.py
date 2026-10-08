@@ -3,7 +3,7 @@
 from pathlib import Path
 
 import yaml
-from conftest import NS, PATH, idem, onboard
+from conftest import KEY, NS, PATH, QS, idem, onboard
 from openapi_spec_validator import validate
 
 from api_consumers.logging_setup import redact
@@ -23,14 +23,14 @@ def test_el_cliente_de_vault_no_puede_leer_datos():
 def test_la_key_no_aparece_en_respuestas_metadata_ni_logs(client, parts, capfd):
     texts = [str(onboard(client))]
     parts["subscriber"].subs[NS] = 1
-    rot = client.post(f"/v1/consumers/{NS}/rotations", headers=idem()).json()
+    rot = client.post(f"/v1/consumers/{NS}/rotations?{QS}", headers=idem()).json()
     texts.append(str(rot))
     texts.append(
-        client.patch(f"/v1/consumers/{NS}/rotations/{rot['id']}", json={"action": "complete"}, headers=idem()).text
+        client.patch(f"/v1/consumers/{NS}/rotations/{rot['id']}?{QS}", json={"action": "complete"}, headers=idem()).text
     )
-    texts.append(client.get(f"/v1/consumers/{NS}").text)
-    texts.append(client.get(f"/v1/consumers/{NS}/secret-apim").text)
-    keys = {v["app_key"] for v in parts["vault"].data[PATH].values()}
+    texts.append(client.get(f"/v1/consumers/{NS}?{QS}").text)
+    texts.append(client.get(f"/v1/consumers/{NS}/secret-apim?{QS}").text)
+    keys = {v[KEY] for v in parts["vault"].data[PATH].values() if KEY in v}
     assert len(keys) == 2  # original + rotada
     out, err = capfd.readouterr()
     haystack = "\n".join(texts) + str(parts["vault"].meta) + str(parts["subscriber"].calls) + out + err
@@ -65,4 +65,4 @@ def test_redaccion_de_logs():
 
 def test_auth(client):
     client.headers.pop("Authorization")
-    assert client.get(f"/v1/consumers/{NS}").status_code == 401
+    assert client.get(f"/v1/consumers/{NS}?{QS}").status_code == 401

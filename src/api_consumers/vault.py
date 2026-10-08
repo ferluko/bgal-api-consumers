@@ -5,6 +5,9 @@
 - Metadata (`metadata/`): lectura y escritura de `custom_metadata`, `current_version` y versiones. Ahí vive el estado
   del consumidor y de la rotación.
 - Sin `delete` ni `destroy`: la baja escribe una versión tombstone y las anteriores quedan para auditoría.
+
+Los paths son completos: el primer segmento es el mount KV v2 (`openshift-<ambiente>/<ns>/secret-apim-<tenant>-v2`,
+`apim-<tier>/consumers/_index/...`).
 """
 
 from __future__ import annotations
@@ -109,6 +112,14 @@ class MemoryVault:
         return True
 
 
+def split_mount(path: str, root_ok: bool = False) -> tuple[str, str]:
+    """openshift-qas/ns/secret → ("openshift-qas", "ns/secret"). Con `root_ok`, "openshift-qas" → (mount, "")."""
+    mount, _, rest = path.strip("/").partition("/")
+    if not mount or not (rest or root_ok):
+        raise ValueError(f"path de Vault sin mount: {path!r}")
+    return mount, rest
+
+
 class HvacVault:
     """KV v2 vía hvac. Re-autentica sola cuando el token vence (AppRole/Kubernetes tienen TTL)."""
 
@@ -117,7 +128,6 @@ class HvacVault:
 
         self._s = s
         self._hvac = hvac
-        self.mount = s.mount
         # Con approle/kubernetes, token="" evita que hvac tome VAULT_TOKEN o ~/.vault-token del entorno y lo mande
         # en el login (Vault 2.x responde 500 "failed to look up namespace from the token").
         token = None if s.vault_auth == "token" else ""
@@ -149,7 +159,8 @@ class HvacVault:
     def write(self, path: str, data: dict, cas: int) -> int:
         kv = self.client.secrets.kv.v2
         try:
-            r = self._call(kv.create_or_update_secret, path=path, secret=data, cas=cas, mount_point=self.mount)
+            mount, rel = split_mount(path)
+            r = self._call(kv.create_or_update_secret, path=rel, secret=data, cas=cas, mount_point=mount)
         except self._hvac.exceptions.InvalidRequest as e:
             if "check-and-set" in str(e):
                 raise CasMismatch(f"{path}: cas={cas}") from None
@@ -159,7 +170,8 @@ class HvacVault:
     def metadata(self, path: str) -> dict | None:
         kv = self.client.secrets.kv.v2
         try:
-            r = self._call(kv.read_secret_metadata, path=path, mount_point=self.mount)
+            mount, rel = split_mount(path)
+            r = self._call(kv.read_secret_metadata, path=rel, mount_point=mount)
         except self._hvac.exceptions.InvalidPath:
             return None
         d = (r or {}).get("data") or {}
@@ -178,12 +190,14 @@ class HvacVault:
         cur = self.metadata(path)
         existing = {k: v for k, v in ((cur or {}).get("custom") or {}).items() if k not in (drop or set())}
         merged = {**existing, **custom_metadata(metadata)}
-        self._call(kv.update_metadata, path=path, custom_metadata=merged, mount_point=self.mount)
+        mount, rel = split_mount(path)
+        self._call(kv.update_metadata, path=rel, custom_metadata=merged, mount_point=mount)
 
     def list(self, prefix: str) -> list[str]:
         kv = self.client.secrets.kv.v2
         try:
-            r = self._call(kv.list_secrets, path=prefix, mount_point=self.mount)
+            mount, rel = split_mount(prefix, root_ok=True)
+            r = self._call(kv.list_secrets, path=rel, mount_point=mount)
         except self._hvac.exceptions.InvalidPath:
             return []
         return list(((r or {}).get("data") or {}).get("keys") or [])

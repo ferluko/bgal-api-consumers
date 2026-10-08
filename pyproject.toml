@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "api-consumers"
-version = "0.1.0"
+version = "0.2.0"
 description = "MVP de la API Consumers (credencial del consumidor en Vault, sin leer keys) — Banco Galicia"
 requires-python = ">=3.10"
 dependencies = [

@@ -18,12 +18,17 @@ log = logging.getLogger(__name__)
 
 
 class Subscriber(Protocol):
+    """La credencial es por namespace y tenant (secret-apim-<tenant>-v2): la ventana de rotación también (Subscriber
+    0.6.0 en adelante)."""
+
     def list_subscriptions(self, namespace: str) -> list[dict]: ...
-    def open_overlap(self, namespace: str, rotation_id: str, vault_version: int, idem_key: str) -> dict: ...
-    def close_overlap(self, namespace: str, idem_key: str) -> dict | None:
+    def open_overlap(
+        self, namespace: str, tenant: str, rotation_id: str, vault_version: int, idem_key: str
+    ) -> dict: ...
+    def close_overlap(self, namespace: str, tenant: str, idem_key: str) -> dict | None:
         """Operación de cierre, o None si no había ventana abierta (404)."""
 
-    def refresh(self, namespace: str) -> bool: ...
+    def refresh(self, namespace: str, tenant: str) -> bool: ...
     def operation(self, op_id: str) -> dict: ...
 
 
@@ -61,12 +66,12 @@ class HttpSubscriber:
             raise _unavailable("list", f"HTTP {r.status_code}")
         return r.json().get("items") or []
 
-    def open_overlap(self, namespace: str, rotation_id: str, vault_version: int, idem_key: str) -> dict:
+    def open_overlap(self, namespace: str, tenant: str, rotation_id: str, vault_version: int, idem_key: str) -> dict:
         r = self._req(
             "overlap",
             "PUT",
             f"/v1/credential-overlaps/{namespace}",
-            json={"rotationId": rotation_id, "vaultVersion": vault_version},
+            json={"tenant": tenant, "rotationId": rotation_id, "vaultVersion": vault_version},
             headers={"Idempotency-Key": idem_key},
         )
         if r.status_code == 409:
@@ -75,9 +80,13 @@ class HttpSubscriber:
             raise _unavailable("overlap", f"HTTP {r.status_code}")
         return r.json()
 
-    def close_overlap(self, namespace: str, idem_key: str) -> dict | None:
+    def close_overlap(self, namespace: str, tenant: str, idem_key: str) -> dict | None:
         r = self._req(
-            "overlap", "DELETE", f"/v1/credential-overlaps/{namespace}", headers={"Idempotency-Key": idem_key}
+            "overlap",
+            "DELETE",
+            f"/v1/credential-overlaps/{namespace}",
+            params={"tenant": tenant},
+            headers={"Idempotency-Key": idem_key},
         )
         if r.status_code == 404:
             return None
@@ -85,12 +94,12 @@ class HttpSubscriber:
             raise _unavailable("overlap", f"HTTP {r.status_code}")
         return r.json()
 
-    def refresh(self, namespace: str) -> bool:
+    def refresh(self, namespace: str, tenant: str) -> bool:
         r = self._req(
             "refresh",
             "POST",
             f"/v1/credential-overlaps/{namespace}/refresh",
-            params={"timeoutSeconds": self.refresh_timeout_s},
+            params={"timeoutSeconds": self.refresh_timeout_s, "tenant": tenant},
             timeout=self.refresh_timeout_s + 15,
         )
         if r.status_code not in (200, 504):
@@ -108,8 +117,8 @@ class FakeSubscriber:
     """Tests y desarrollo: simula el API Subscriber (operaciones que terminan al instante)."""
 
     def __init__(self) -> None:
-        self.subs: dict[str, int] = {}  # namespace → suscripciones vivas
-        self.overlaps: dict[str, tuple[str, int]] = {}
+        self.subs: dict[str, int] = {}  # namespace → suscripciones vivas (tenant b2c)
+        self.overlaps: dict[tuple[str, str], tuple[str, int]] = {}  # (namespace, tenant) → (rotación, versión)
         self.ops: dict[str, dict] = {}
         self.calls: list[tuple] = []
         self.fail_open = False
@@ -122,27 +131,27 @@ class FakeSubscriber:
         return op
 
     def list_subscriptions(self, namespace: str) -> list[dict]:
-        return [{"id": f"sub-x{i}--{namespace}"} for i in range(self.subs.get(namespace, 0))]
+        return [{"id": f"sub-x{i}--{namespace}", "tenant": "b2c"} for i in range(self.subs.get(namespace, 0))]
 
-    def open_overlap(self, namespace: str, rotation_id: str, vault_version: int, idem_key: str) -> dict:
-        self.calls.append(("open", namespace, rotation_id, vault_version))
-        cur = self.overlaps.get(namespace)
+    def open_overlap(self, namespace: str, tenant: str, rotation_id: str, vault_version: int, idem_key: str) -> dict:
+        self.calls.append(("open", namespace, tenant, rotation_id, vault_version))
+        cur = self.overlaps.get((namespace, tenant))
         if cur and cur[0] != rotation_id:
             raise Problem(409, "Conflict", "otra ventana abierta")
         if not self.fail_open:
-            self.overlaps[namespace] = (rotation_id, vault_version)
+            self.overlaps[(namespace, tenant)] = (rotation_id, vault_version)
         return self._op("overlapOpen", namespace, not self.fail_open)
 
-    def close_overlap(self, namespace: str, idem_key: str) -> dict | None:
-        self.calls.append(("close", namespace))
-        if namespace not in self.overlaps:
+    def close_overlap(self, namespace: str, tenant: str, idem_key: str) -> dict | None:
+        self.calls.append(("close", namespace, tenant))
+        if (namespace, tenant) not in self.overlaps:
             return None
         if not self.fail_close:
-            del self.overlaps[namespace]
+            del self.overlaps[(namespace, tenant)]
         return self._op("overlapClose", namespace, not self.fail_close)
 
-    def refresh(self, namespace: str) -> bool:
-        self.calls.append(("refresh", namespace))
+    def refresh(self, namespace: str, tenant: str) -> bool:
+        self.calls.append(("refresh", namespace, tenant))
         return self.refresh_ok
 
     def operation(self, op_id: str) -> dict:
