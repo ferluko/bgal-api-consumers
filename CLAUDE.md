@@ -1,16 +1,18 @@
 # CLAUDE.md — bgal-api-consumers
 
 **API Consumers** del toolkit de APIM sobre Kuadrant: la credencial de cada namespace consumidor (App ID / App Key)
-en Vault KV v2 (`apim-<tier>/consumers/<ns>/credentials`): alta, baja y rotación coordinada con el API Subscriber.
-**Escribe sin leer keys y sin estado propio.** Versión 0.1.0 (`main`).
+en Vault KV v2 con la convención de DevSecOps (`openshift-<ambiente>/<ns>/secret-apim-<tenant>-v2`, claves
+`app_id_<tenant>`/`app_key_<tenant>`): alta, baja y rotación coordinada con el API Subscriber. Una credencial por
+namespace y tenant. **Escribe sin leer keys y sin estado propio.** Versión 0.2.0 (rama `feat/path-vault-real`; `main` 0.1.0).
 
 Contexto completo, estado y backlog: `~/Documents/Galicia/mc/doc/01_apim/RHCL-Kuadrant/api-toolkit-spec/PROMPT-claude-code-api-toolkit.md` (leerlo primero).
 Arquitectura: `RHCL-Kuadrant/ADR-api-consumers-y-subscriber-sin-estado.md` (D1, D3, D4, D5). Hermano: `~/Documents/Galicia/mc/bgal-api-sub`
 (suscripciones; runbooks del lab y e2e viven ahí). Resultados: `RHCL-Kuadrant/poc-credenciales-suscripcion/HALLAZGOS.md` (H-22, H-23).
 
 ## Reglas
-- Contrato: `openapi/consumers.yaml` 0.1 (copia de `RHCL-Kuadrant/api-toolkit-spec/openapi/consumers.yaml`; mantener ambas iguales, hay test de rutas ↔ contrato).
-- **Escribir sin leer keys (D3):** el cliente de Vault (`vault.py`) no tiene método para leer `data/`; solo escritura con check-and-set (`cas`) y metadata. No agregar lecturas de valores (test). Policy mínima validada contra Vault 2.1.1: `data/consumers/*` create/update · `metadata/consumers/*` read/list/update · sin delete/destroy.
+- Contrato: `openapi/consumers.yaml` 0.2.0-draft (copia de `RHCL-Kuadrant/api-toolkit-spec/openapi/consumers.yaml`; mantener ambas iguales, hay test de rutas ↔ contrato).
+- **Escribir sin leer keys (D3):** el cliente de Vault (`vault.py`) no tiene método para leer `data/`; solo escritura con check-and-set (`cas`) y metadata. No agregar lecturas de valores (test). Policy mínima validada contra Vault 2.1.1 (con el path viejo): `data/…` create/update · `metadata/…` read/list/update · sin delete/destroy. Con la convención nueva: `openshift-<amb>/data/+/secret-apim-*` create/update, `openshift-<amb>/metadata/*` read/list/update y el índice en `apim-<tier>`.
+- **Identidad de la credencial:** `Cred` (namespace, environment, tenant → path). `environment` y `tenant` van en el alta y como query obligatoria en todos los recursos de un consumidor. Paths de Vault completos (el primer segmento es el mount; `split_mount` en `HvacVault`).
 - El App Key existe en el proceso solo al generarlo (alta y rotación) y al sincronizarlo con 3scale; nunca en respuestas, logs (redacción), metadata ni llamadas al API Subscriber (solo viajan números de versión).
 - **Sin estado propio:** consumidor y rotación en la `custom_metadata` del secreto. Vault rechaza valores vacíos: se omiten; para borrar una clave se usa `drop` (`_set_rot` con valor vacío).
 - Unicidad con índices escritos con `cas=0` bajo `APICON_INDEX_PREFIX` (lab: `consumers/_index/`, para que los cubra la policy del kit; objetivo: prefijo propio).
@@ -26,11 +28,11 @@ Arquitectura: `RHCL-Kuadrant/ADR-api-consumers-y-subscriber-sin-estado.md` (D1, 
 | `service.py` | Alta/baja/consulta, máquina de estados de la rotación (`_drive`, `_write_new_key`, `recover`), callbacks |
 | `vault.py` | `HvacVault` y `MemoryVault` (sin lectura de datos; `write(cas)`, `metadata`, `set_metadata(drop)`, `list`) |
 | `subscriber.py` | Cliente del API Subscriber (`HttpSubscriber`, `FakeSubscriber`) |
-| `render.py` | Path de la credencial y ExternalSecret `secret-apim` del consumidor |
+| `render.py` | ExternalSecret `secret-apim-<tenant>` del consumidor (el path lo arma `Settings.credential_path_template`) |
 | `integrations.py` · `config.py` · `main.py` | 3scale (stub) y callbacks · Settings `APICON_*` · rutas FastAPI |
 
 ## Comandos
-- `make install` · `make test` (27; ~1 s) · `make lint` · `make run-dev` (Vault en memoria, Subscriber simulado, puerto 8081).
+- `make install` · `make test` (29 + 2 de integración que se saltan sin Vault; ~1 s) · `make lint` · `make run-dev` (Vault en memoria, Subscriber simulado, puerto 8081).
 - `make it-vault` con `APICON_IT_VAULT_ADDR/ROLE_ID/SECRET_ID`: integración contra Vault real con la policy de D3 (para local: un `hashicorp/vault:2.1.1` en Docker con esa policy).
 - `make helm-template CLUSTER=paas-arqlab` · `make helm-install CLUSTER=paas-arqlab` (namespace `apim-toolkit`, compartido con el Subscriber).
 - Imagen (en la Mac, robot de quay `ferlukobgal+para_claudia`): `docker buildx build --platform linux/amd64 -t quay.io/ferlukobgal/bgal-api-consumers:<versión> -f Containerfile --push .`
@@ -42,4 +44,4 @@ Se edita en la Mac → `git push` → en darqtesting01, en `/app/bgal-api-consum
 - Vault de lab en modo dev: un reinicio de `vault-0` borra todo (`vault-dev/scripts/recover.sh`). Los consumidores dados de alta por el Subscriber 0.1 no tienen `app_id` en la metadata: el e2e usa `e2e-con-lab`.
 
 ## Pendiente
-Rol AppRole propio con la policy de D3 en `vault-dev` (hoy usa `apim-subscriber-nonprd`, que además lee) · `max_versions` explícito · `Lease` para rotaciones con varias réplicas · 3scale real.
+Rol propio con la policy de D3 (auth de Kubernetes, acordado con DevSecOps el 06/10; hoy usa el AppRole `apim-subscriber-nonprd` del kit, que además lee) · adoptar las credenciales que ya existen (`secret-appim-<tenant>-v2` de 3scale) sin leer el `app_id` · `max_versions` explícito · `Lease` para rotaciones con varias réplicas · 3scale real · el `recover` lee el registro de rotaciones del índice (antes recorría `consumers/`).
