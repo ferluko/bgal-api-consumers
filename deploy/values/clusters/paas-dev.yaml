@@ -15,6 +15,10 @@ cluster:
 apiConsumers:
   namespace: kuad-kuadrantorqs-dev                # lo crea la plataforma; lo comparte con el API Subscriber
   createNamespace: false
+  # LimitRange de kuad-kuadrantorqs-dev (mínimos por contenedor y por pod): los mismos valores que el Subscriber.
+  resources:
+    requests: {cpu: 50m, memory: 256Mi}
+    limits: {memory: 257Mi}
   vault:
     addr: ""                                    # vacío a propósito: sin --set falla (no toma el Vault de lab de domain-lab)
     auth: approle
