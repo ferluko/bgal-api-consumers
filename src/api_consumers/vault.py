@@ -6,8 +6,11 @@
   del consumidor y de la rotación.
 - Sin `delete` ni `destroy`: la baja escribe una versión tombstone y las anteriores quedan para auditoría.
 
-Los paths son completos: el primer segmento es el mount KV v2 (`openshift-<ambiente>/<ns>/secret-apim-<tenant>-v2`,
-`apim-<tier>/consumers/_index/...`).
+Los paths son completos e incluyen el mount KV v2. Dos formas:
+- con `/data/` (Vault corporativo, 26/10): lo anterior es el mount, que puede tener varios segmentos
+  (`openshift-<ambiente>/<ns>/data/secret-apim-<tenant>-v2`: namespace de Vault `openshift-<ambiente>` y un KV por
+  namespace de OpenShift). Es la misma forma que ESO usa tal cual en el `remoteRef.key`;
+- sin `/data/`: el primer segmento es el mount (`apim-<tier>/consumers/_index/...`, el Vault de lab).
 """
 
 from __future__ import annotations
@@ -113,8 +116,19 @@ class MemoryVault:
 
 
 def split_mount(path: str, root_ok: bool = False) -> tuple[str, str]:
-    """openshift-qas/ns/secret → ("openshift-qas", "ns/secret"). Con `root_ok`, "openshift-qas" → (mount, "")."""
-    mount, _, rest = path.strip("/").partition("/")
+    """(mount, path relativo) para hvac.
+
+    openshift-qas/ns/data/secret → ("openshift-qas/ns", "secret"): con `/data/`, el mount es todo lo anterior.
+    apim-nonprd/consumers/_index → ("apim-nonprd", "consumers/_index"): sin `/data/`, el primer segmento.
+    Con `root_ok`, "apim-nonprd" → ("apim-nonprd", "") (listar la raíz del mount).
+    """
+    p = path.strip("/")
+    if "/data/" in p:
+        mount, _, rest = p.partition("/data/")
+    elif p.endswith("/data") and root_ok:
+        mount, rest = p[: -len("/data")], ""
+    else:
+        mount, _, rest = p.partition("/")
     if not mount or not (rest or root_ok):
         raise ValueError(f"path de Vault sin mount: {path!r}")
     return mount, rest

@@ -111,3 +111,24 @@ def test_ambiente_y_tenant_validos(client):
     assert client.post("/v1/consumers", json={**body, "environment": "QA"}, headers=idem()).status_code == 400
     assert client.get(f"/v1/consumers/{NS}").status_code == 400  # sin ambiente ni tenant
     assert client.get(f"/v1/consumers/{NS}", params={**Q, "tenant": "b2x"}).status_code == 400
+
+
+def test_split_mount_con_y_sin_data():
+    """Vault corporativo (26/10): con `/data/`, el mount es todo lo anterior (namespace de Vault + KV por namespace)."""
+    from api_consumers.vault import split_mount
+
+    assert split_mount(f"openshift-qas/{NS}/data/secret-apim-b2c-v2") == (f"openshift-qas/{NS}", "secret-apim-b2c-v2")
+    assert split_mount(f"openshift-qas/{NS}/secret-apim-b2c-v2") == ("openshift-qas", f"{NS}/secret-apim-b2c-v2")
+    assert split_mount("apim-nonprod/consumers/_index/app-ids/x") == ("apim-nonprod", "consumers/_index/app-ids/x")
+    assert split_mount("apim-nonprod", root_ok=True) == ("apim-nonprod", "")
+    assert split_mount(f"openshift-qas/{NS}/data/", root_ok=True) == (f"openshift-qas/{NS}", "")
+
+
+def test_alta_con_el_path_del_vault_corporativo(client, parts, settings):
+    """El path con `/data/` llega igual al ExternalSecret del consumidor: ESO lo usa tal cual."""
+    settings.credential_path_template = "openshift-{env}/{namespace}/data/secret-apim-{tenant}-v2"
+    c = onboard(client)
+    path = f"openshift-qas/{NS}/data/secret-apim-{TENANT}-v2"
+    assert c["vaultPath"] == path and parts["vault"].data[path][1][KEY]
+    es = yaml.safe_load(c["secretApimManifest"].split("\n", 1)[1])
+    assert es["spec"]["dataFrom"][0]["extract"]["key"] == path

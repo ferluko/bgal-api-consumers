@@ -20,7 +20,8 @@ def secret_apim_externalsecret(
     store_name: str,
     refresh: str,
 ) -> str:
-    """`vault_key` es el path completo (el primer segmento es el mount): la store del consumidor no fija mount."""
+    """`vault_key` es el path completo (incluye el mount; con `/data/`, ESO lo usa tal cual): la store del consumidor
+    no fija mount."""
     name = f"secret-apim-{tenant}"
     obj = {
         "apiVersion": "external-secrets.io/v1",
