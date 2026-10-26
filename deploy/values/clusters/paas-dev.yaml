@@ -1,0 +1,28 @@
+# Capa 7 — paas-dev (máxima prioridad). Las APIs del toolkit corren en kuad-kuadrantorqs-dev, con el Vault
+# corporativo (HCP, namespace admin). El gateway y el Argo siguen en paas-arqlab.
+#
+# La dirección del Vault NO va acá (este repo es público): la pasa bgal-api-sub/deploy/scripts/toolkit-up.sh desde
+# bgal-api-sub/deploy/env/paas-dev.conf (--set apiConsumers.vault.addr). El Secret api-consumers-secrets (AppRole,
+# tokens) sale del .env del cluster: nunca a Git.
+cluster:
+  name: paas-dev
+  baseDomain: bancogalicia.com.ar
+  env: dev
+  domain: lab                                     # secretos por existingSecret (groups/domain-lab.yaml)
+  tier: lower
+  prod: false
+
+apiConsumers:
+  namespace: kuad-kuadrantorqs-dev                # lo crea la plataforma; lo comparte con el API Subscriber
+  createNamespace: false
+  vault:
+    addr: ""                                    # vacío a propósito: sin --set falla (no toma el Vault de lab de domain-lab)
+    auth: approle
+    namespace: admin
+    verify: true
+    # Vault corporativo: namespace de Vault openshift-<ambiente> con un KV por namespace de OpenShift. El /data/
+    # marca dónde termina el mount (la API Consumers parte ahí; ESO usa la key tal cual).
+    credentialPathTemplate: "openshift-{env}/{namespace}/data/secret-apim-{tenant}-v2"
+    mount: apim-nonprod                           # índices de unicidad (en admin existe apim-nonprod, no apim-nonprd)
+  eso:
+    consumerStore: {kind: ClusterSecretStore, name: vault-apim-consumer-nonprd}

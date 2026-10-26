@@ -74,3 +74,21 @@ def test_prd_render_usa_eso_y_auth_kubernetes():
 def test_validaciones_del_chart(sets, msg):
     p, _ = render(LAB, *sets)
     assert p.returncode != 0 and msg in p.stderr
+
+
+def test_paas_dev_vault_corporativo():
+    """paas-dev: namespace de la plataforma, path con /data/ e índices en apim-nonprod. La dirección del Vault no está
+    en el repo (público): sin --set, el chart falla explícito."""
+    layers = ["groups/all", "groups/tier-lower", "groups/domain-lab", "profiles/apim-toolkit", "clusters/paas-dev"]
+    p, _ = render(layers)
+    assert p.returncode != 0 and "vault.addr es obligatorio" in p.stderr
+    p, docs = render(layers, "apiConsumers.vault.addr=https://vault.example:8200")
+    assert p.returncode == 0, p.stderr
+    assert not by_kind(docs, "Namespace") and {d["metadata"]["namespace"] for d in docs} == {"kuad-kuadrantorqs-dev"}
+    env = by_kind(docs, "ConfigMap", "api-consumers-env")[0]["data"]
+    assert env["APICON_CREDENTIAL_PATH_TEMPLATE"] == "openshift-{env}/{namespace}/data/secret-apim-{tenant}-v2"
+    assert (env["APICON_VAULT_MOUNT"], env["APICON_VAULT_NAMESPACE"], env["APICON_VAULT_VERIFY"]) == (
+        "apim-nonprod",
+        "admin",
+        "true",
+    )
