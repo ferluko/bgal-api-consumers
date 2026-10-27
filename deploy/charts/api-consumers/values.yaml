@@ -51,7 +51,8 @@ apiConsumers:
     k8sMount: kubernetes
     namespace: ""                                 # namespace de HCP Vault, si aplica
     verify: true
-    # Credencial del consumidor (convención de DevSecOps): el primer segmento es el mount KV v2.
+    # Credencial del consumidor (convención de DevSecOps). Sin /data/, el primer segmento es el mount KV v2 (lab);
+    # con /data/, el mount es todo lo anterior (Vault corporativo: openshift-{env}/{namespace}/data/secret-apim-{tenant}-v2).
     credentialPathTemplate: "openshift-{env}/{namespace}/secret-apim-{tenant}-v2"
     envs: {dev: dev, int: int, qa: qas, qas: qas, prd: prd}  # environment del pedido → openshift-<ambiente>
     mount: ""                                     # mount de los índices; default apim-<tier>

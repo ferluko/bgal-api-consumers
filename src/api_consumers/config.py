@@ -42,8 +42,11 @@ class Settings(BaseSettings):
     vault_k8s_mount: str = "kubernetes"
     vault_namespace: str = ""
     vault_verify: bool = True
-    # Credencial del consumidor: convención de DevSecOps (06/10 y 07/10). Una por namespace y tenant; el primer
-    # segmento es el mount KV v2 (openshift-<ambiente>). Claves app_id_<tenant> / app_key_<tenant>.
+    # Credencial del consumidor: convención de DevSecOps (06/10 y 07/10). Una por namespace y tenant. Claves
+    # app_id_<tenant> / app_key_<tenant>. Sin `/data/`, el primer segmento es el mount KV v2 (Vault de lab); con
+    # `/data/`, el mount es todo lo anterior. Vault corporativo:
+    # openshift-{env}/{namespace}/data/secret-apim-{tenant}-v2 (namespace de Vault openshift-<ambiente> con un KV por
+    # namespace de OpenShift; vault.split_mount).
     credential_path_template: str = "openshift-{env}/{namespace}/secret-apim-{tenant}-v2"
     app_id_field: str = "app_id_{tenant}"
     app_key_field: str = "app_key_{tenant}"

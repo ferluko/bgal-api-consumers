@@ -41,14 +41,15 @@ push:
 helm-lint:
 	helm lint $(CHART) $(VALUES)
 
-helm-template:      ## render con la jerarquía de 7 capas: make helm-template CLUSTER=paas-arqlab
+helm-template:      ## render con la jerarquía de 7 capas: make helm-template CLUSTER=paas-arqlab [HELM_ARGS='--set …']
 	@echo "# capas: $(VALUES)" >&2
-	helm template api-consumers $(CHART) $(VALUES)
+	helm template api-consumers $(CHART) $(VALUES) $(HELM_ARGS)
 
-NS ?= apim-toolkit
-helm-install:       ## instala/actualiza en el cluster logueado: make helm-install CLUSTER=paas-arqlab
+# namespace del archivo del cluster (apiConsumers.namespace); si no lo fija, el del profile
+NS ?= $(or $(shell awk '/^  namespace:/{print $$2; exit}' $(V)/clusters/$(CLUSTER).yaml),apim-toolkit)
+helm-install:       ## instala/actualiza en el cluster logueado: make helm-install CLUSTER=paas-arqlab [HELM_ARGS='--set …']
 	@echo "# capas: $(VALUES)" >&2
-	helm upgrade --install api-consumers $(CHART) $(VALUES) -n $(NS) --wait --timeout 5m
+	helm upgrade --install api-consumers $(CHART) $(VALUES) -n $(NS) --wait --timeout 5m $(HELM_ARGS)
 
 helm-uninstall:
 	helm uninstall api-consumers -n $(NS)

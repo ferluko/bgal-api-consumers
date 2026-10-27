@@ -67,6 +67,12 @@ Chart en `deploy/charts/api-consumers/`, con la misma jerarquía de 7 capas de v
 (`make helm-template CLUSTER=paas-arqlab`). En los clusters de APIM: Vault corporativo con auth de Kubernetes
 (TokenReview) y secretos propios por ESO.
 
+Despliegue reproducible en cualquier cluster, junto con el API Subscriber y los mocks: `bgal-api-sub/deploy/scripts/toolkit-up.sh <cluster>`
+(values de `deploy/values/clusters/<cluster>.yaml` de este repo, más la dirección del Vault y el Secret desde el
+`.env` del cluster, que no va a Git). Con el Vault corporativo (`clusters/paas-dev.yaml`), el path lleva `/data/`
+después del mount (`openshift-{env}/{namespace}/data/secret-apim-{tenant}-v2`): la API Consumers parte ahí y ESO
+usa la key tal cual.
+
 Lab (darqtesting01, podman, al lado del API Subscriber):
 
 ```bash
