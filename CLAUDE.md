@@ -3,14 +3,15 @@
 **API Consumers** del toolkit de APIM sobre Kuadrant: la credencial de cada namespace consumidor (App ID / App Key)
 en Vault KV v2 con la convención de DevSecOps (`openshift-<ambiente>/<ns>/secret-apim-<tenant>-v2`, claves
 `app_id_<tenant>`/`app_key_<tenant>`): alta, baja y rotación coordinada con el API Subscriber. Una credencial por
-namespace y tenant. **Escribe sin leer keys y sin estado propio.** Versión 0.2.1 (paths del Vault corporativo con `/data/`; `main` 0.2.0).
+namespace y tenant. **Escribe sin leer keys y sin estado propio.** Versión 0.2.2 (paths del Vault corporativo con `/data/`; credenciales preexistentes `Unmanaged`).
 
 Contexto completo, estado y backlog: `~/Documents/Galicia/mc/doc/01_apim/RHCL-Kuadrant/api-toolkit-spec/PROMPT-claude-code-api-toolkit.md` (leerlo primero).
 Arquitectura: `RHCL-Kuadrant/ADR-api-consumers-y-subscriber-sin-estado.md` (D1, D3, D4, D5). Hermano: `~/Documents/Galicia/mc/bgal-api-sub`
 (suscripciones; runbooks del lab y e2e viven ahí). Resultados: `RHCL-Kuadrant/poc-credenciales-suscripcion/HALLAZGOS.md` (H-22, H-23).
 
 ## Reglas
-- Contrato: `openapi/consumers.yaml` 0.2.0-draft (copia de `RHCL-Kuadrant/api-toolkit-spec/openapi/consumers.yaml`; mantener ambas iguales, hay test de rutas ↔ contrato).
+- Contrato: `openapi/consumers.yaml` 0.2.2-draft (copia de `RHCL-Kuadrant/api-toolkit-spec/openapi/consumers.yaml`; mantener ambas iguales, hay test de rutas ↔ contrato).
+- **Credenciales preexistentes (0.2.2):** la API Consumers solo opera sobre lo que creó o importó (`created_by: api-consumers` o `app_id` en la metadata; `_managed`). Una credencial que dejó otro proceso (DevSecOps, 3scale) se informa `Unmanaged` y rotarla, darla de baja o darla de alta da 409 **antes de escribir**: con `app_id` vacío le rompería la credencial al consumidor real (27/10, `agfi-agrofinan-qas` en paas-dev). Adoptarlas es pendiente (con el job de sembrar el índice).
 - **Escribir sin leer keys (D3):** el cliente de Vault (`vault.py`) no tiene método para leer `data/`; solo escritura con check-and-set (`cas`) y metadata. No agregar lecturas de valores (test). Policy mínima validada contra Vault 2.1.1 (con el path viejo): `data/…` create/update · `metadata/…` read/list/update · sin delete/destroy. Con la convención nueva: `openshift-<amb>/data/+/secret-apim-*` create/update, `openshift-<amb>/metadata/*` read/list/update y el índice en `apim-<tier>`.
 - **Identidad de la credencial:** `Cred` (namespace, environment, tenant → path). `environment` y `tenant` van en el alta y como query obligatoria en todos los recursos de un consumidor. Paths de Vault completos (`split_mount` en `HvacVault`): con `/data/`, el mount es todo lo anterior (Vault corporativo, 26/10: `openshift-<amb>/<ns>/data/secret-apim-<tenant>-v2`, namespace de Vault `openshift-<amb>` con un KV por namespace de OpenShift); sin `/data/`, el primer segmento (Vault de lab, índices `apim-<tier>/…`).
 - El App Key existe en el proceso solo al generarlo (alta y rotación) y al sincronizarlo con 3scale; nunca en respuestas, logs (redacción), metadata ni llamadas al API Subscriber (solo viajan números de versión).
@@ -32,7 +33,7 @@ Arquitectura: `RHCL-Kuadrant/ADR-api-consumers-y-subscriber-sin-estado.md` (D1, 
 | `integrations.py` · `config.py` · `main.py` | 3scale (stub) y callbacks · Settings `APICON_*` · rutas FastAPI |
 
 ## Comandos
-- `make install` · `make test` (32 + 2 de integración que se saltan sin Vault; ~1 s) · `make lint` · `make run-dev` (Vault en memoria, Subscriber simulado, puerto 8081).
+- `make install` · `make test` (34 + 2 de integración que se saltan sin Vault; ~1 s) · `make lint` · `make run-dev` (Vault en memoria, Subscriber simulado, puerto 8081).
 - `make it-vault` con `APICON_IT_VAULT_ADDR/ROLE_ID/SECRET_ID`: integración contra Vault real con la policy de D3 (para local: un `hashicorp/vault:2.1.1` en Docker con esa policy).
 - `make helm-template CLUSTER=paas-arqlab` · `make helm-install CLUSTER=paas-arqlab` (namespace del archivo del cluster o `apim-toolkit`, compartido con el Subscriber; `HELM_ARGS='--set …'`).
 - **paas-dev** (`deploy/values/clusters/paas-dev.yaml`): Vault corporativo, path con `/data/`, índices en `apim-nonprod`, namespace `kuad-kuadrantorqs-dev`. La dirección del Vault no va en este repo (es **público**): la pasa `bgal-api-sub/deploy/scripts/toolkit-up.sh` desde su `deploy/env/<cluster>.conf`. Sin ella el chart falla.

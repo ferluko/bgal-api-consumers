@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: API Consumers
-  version: 0.2.0-draft
+  version: 0.2.2-draft
   description: |
     Identidad del consumidor: una credencial (App ID / App Key) por namespace **y tenant**, su alta, baja y rotación.
     Es el **único** servicio que escribe credenciales en Vault, con la convención de DevSecOps (06/10 y 07/10):
@@ -33,6 +33,11 @@ info:
 
     **Convivencia con 3scale:** si `threescale.syncCredentials` es true, alta, rotación y baja también actualizan
     la aplicación de 3scale del proyecto.
+
+    **Credenciales preexistentes (0.2.2):** una credencial que ya está en Vault pero que no creó ni importó la API
+    Consumers (no tiene su metadata: ni `created_by` ni `app_id`) se informa como `Unmanaged`. Rotarla o darla de baja
+    escribiría un `app_id` vacío y le rompería la credencial al consumidor, así que esas operaciones dan 409 hasta que
+    se adopte.
 servers:
   - url: https://api-consumers.apim.<dominio-interno>
 security:
@@ -69,7 +74,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Consumer' }
         '409':
-          description: El namespace ya tiene credencial, o la key importada colisiona con la de otro consumidor.
+          description: El namespace ya tiene credencial (también si es preexistente y no administrada), o la key importada colisiona con la de otro consumidor.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -112,7 +117,7 @@ paths:
               schema: { $ref: '#/components/schemas/Consumer' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
-          description: Tiene suscripciones vivas o una rotación en curso.
+          description: Tiene suscripciones vivas o una rotación en curso, o la credencial es preexistente y no la administra la API Consumers (Unmanaged).
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -166,7 +171,7 @@ paths:
               schema: { $ref: '#/components/schemas/Rotation' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
-          description: Ya hay una rotación en curso, o el consumidor está revocado.
+          description: Ya hay una rotación en curso, el consumidor está revocado, o la credencial es preexistente y no la administra la API Consumers (Unmanaged).
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -329,7 +334,10 @@ components:
         vaultPath: { type: string, example: openshift-qas/sigla-x-qas/secret-apim-b2c-v2 }
         vaultProperty: { type: string, example: app_key_b2c, description: 'Clave del App Key dentro del secreto (nunca el valor).' }
         vaultVersion: { type: integer, description: Versión vigente de la key en KV v2 (current_version). }
-        state: { type: string, enum: [Active, Rotating, Revoked] }
+        state:
+          type: string
+          enum: [Active, Rotating, Revoked, Unmanaged]
+          description: Unmanaged = credencial preexistente en Vault que no creó ni importó la API Consumers (sin su metadata); no se puede rotar ni dar de baja hasta adoptarla.
         origin: { type: string, enum: [generated, 3scale-import] }
         createdAt: { type: string, format: date-time }
         rotatedAt: { type: string, format: date-time }

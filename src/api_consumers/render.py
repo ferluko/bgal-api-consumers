@@ -37,9 +37,10 @@ def secret_apim_externalsecret(
                 "template": {
                     "type": "Opaque",
                     "metadata": {
+                        # sin app-id si la credencial es preexistente (no administrada): un label vacío no dice nada
                         "labels": {
                             "apim.bgal/credential-role": "consumer",
-                            "app-id": app_id,
+                            **({"app-id": app_id} if app_id else {}),
                             "apim.bgal/tenant": tenant,
                         },
                         "annotations": {"apim.bgal/vault-path": vault_key},
