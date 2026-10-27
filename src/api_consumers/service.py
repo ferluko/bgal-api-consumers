@@ -53,6 +53,18 @@ DRIVEN = {"Requested", "OverlapOpening", "KeyWritten", "Completing", "Aborting"}
 CALLBACK_STATES = {"AwaitingConsumer", "Completed", "Aborted", "Failed"}
 
 
+UNMANAGED = (
+    "credencial preexistente no administrada por la API Consumers (sin app_id en la metadata): adoptarla antes de "
+    "rotarla o darla de baja"
+)
+
+
+def _managed(custom: dict) -> bool:
+    """¿La credencial la creó (o importó) la API Consumers? Una preexistente (DevSecOps, 3scale) no tiene su metadata:
+    rotarla o darla de baja escribiría `app_id` vacío y le rompería la credencial al consumidor real."""
+    return custom.get("created_by") == "api-consumers" or bool(custom.get("app_id"))
+
+
 def _hash(payload: Any) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
 
@@ -161,7 +173,10 @@ class Service:
     def consumer_view(self, cr: Cred, md: dict, manifest: str | None = None) -> dict:
         c = md["custom"]
         rot = c.get("rotation_id") if c.get("rotation_state") not in TERMINAL else None
-        state = "Revoked" if c.get("state") == "revoked" else "Rotating" if rot else "Active"
+        if not _managed(c):
+            state, rot = "Unmanaged", None
+        else:
+            state = "Revoked" if c.get("state") == "revoked" else "Rotating" if rot else "Active"
         return _drop_none(
             {
                 "namespace": cr.namespace,
@@ -236,6 +251,11 @@ class Service:
                     if c.get("request_hash") != h:
                         raise unprocessable("Idempotency-Key reutilizada con un payload distinto")
                     return 200, self.consumer_view(cr, md, self.secret_apim(cr, md))
+                if not _managed(c):
+                    raise conflict(
+                        f"{cr.label}: ya existe una credencial preexistente no administrada por la API Consumers "
+                        "(sin app_id en la metadata): hay que adoptarla, no darla de alta"
+                    )
                 raise conflict(f"el namespace {ns} ya tiene credencial para {cr.environment} y {cr.tenant}")
 
             imp = req.get("importFrom3scale")
@@ -309,6 +329,8 @@ class Service:
             if not md:
                 raise not_found(f"consumidor {cr.label}")
             c = md["custom"]
+            if not _managed(c):
+                raise conflict(f"{cr.label}: {UNMANAGED}")
             if c.get("state") == "revoked":
                 return self.consumer_view(cr, md)
             if c.get("rotation_id") and c.get("rotation_state") not in TERMINAL:
@@ -357,6 +379,8 @@ class Service:
             if not md:
                 raise not_found(f"consumidor {cr.label}")
             c = md["custom"]
+            if not _managed(c):
+                raise conflict(f"{cr.label}: {UNMANAGED}")
             if c.get("state") == "revoked":
                 raise conflict(f"{cr.label} está revocado")
             if c.get("rotation_id") and c.get("rotation_idem") == idem_key:

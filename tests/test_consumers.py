@@ -132,3 +132,38 @@ def test_alta_con_el_path_del_vault_corporativo(client, parts, settings):
     assert c["vaultPath"] == path and parts["vault"].data[path][1][KEY]
     es = yaml.safe_load(c["secretApimManifest"].split("\n", 1)[1])
     assert es["spec"]["dataFrom"][0]["extract"]["key"] == path
+
+
+def _preexistente(parts, ns="agfi-agrofinan-qas"):
+    """Credencial que dejó otro proceso (DevSecOps, 3scale): datos en Vault, versión 3, sin la metadata de la API
+    Consumers (ni created_by ni app_id)."""
+    path = f"openshift-qas/{ns}/secret-apim-{TENANT}-v2"
+    for v in range(3):
+        parts["vault"].write(path, {ID: "a1b2c3d4", KEY: f"k{v}"}, cas=v)
+    return ns, path
+
+
+def test_preexistente_no_administrada_unmanaged_y_sin_operaciones_destructivas(client, parts):
+    """paas-dev (27/10): agfi-agrofinan-qas aparecía Active sin appId; rotarla o darla de baja escribía app_id vacío."""
+    ns, path = _preexistente(parts)
+    c = client.get(f"/v1/consumers/{ns}?{QS}").json()
+    assert c["state"] == "Unmanaged" and "appId" not in c and "origin" not in c and c["vaultVersion"] == 3
+    before = dict(parts["vault"].data[path])
+    r = client.post(f"/v1/consumers/{ns}/rotations?{QS}", json={}, headers=idem())
+    assert r.status_code == 409 and "no administrada" in r.json()["detail"]
+    r = client.delete(f"/v1/consumers/{ns}?{QS}", headers=idem())
+    assert r.status_code == 409 and "no administrada" in r.json()["detail"]
+    assert parts["vault"].data[path] == before and parts["vault"].current[path] == 3, "no escribió nada"
+    body = {"namespace": ns, "sigla": "agfi", "tier": "nonprd", **Q}
+    r = client.post("/v1/consumers", json=body, headers=idem())
+    assert r.status_code == 409 and "adoptarla" in r.json()["detail"]
+    es = yaml.safe_load(client.get(f"/v1/consumers/{ns}/secret-apim?{QS}").text.split("\n", 1)[1])
+    assert "app-id" not in es["spec"]["target"]["template"]["metadata"]["labels"], "sin label app-id vacío"
+    assert es["spec"]["dataFrom"][0]["extract"]["key"] == path
+
+
+def test_administrada_sigue_igual(client, parts):
+    c = onboard(client)
+    assert client.get(f"/v1/consumers/{NS}?{QS}").json()["state"] == "Active"
+    es = yaml.safe_load(client.get(f"/v1/consumers/{NS}/secret-apim?{QS}").text.split("\n", 1)[1])
+    assert es["spec"]["target"]["template"]["metadata"]["labels"]["app-id"] == c["appId"]

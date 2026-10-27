@@ -5,7 +5,7 @@ consumidor (App ID / App Key) en Vault KV v2, con la convención de DevSecOps (0
 `openshift-<ambiente>/<ns>/secret-apim-<tenant>-v2`, claves `app_id_<tenant>` y `app_key_<tenant>`. Una credencial por
 namespace y tenant (`b2b`/`b2c`); el ambiente sale del `environment` del pedido (QA → `qas`).
 
-- **Contrato:** [`openapi/consumers.yaml`](openapi/consumers.yaml), v0.2.0-draft (copia de `RHCL-Kuadrant/api-toolkit-spec/openapi/consumers.yaml`).
+- **Contrato:** [`openapi/consumers.yaml`](openapi/consumers.yaml), v0.2.2-draft (copia de `RHCL-Kuadrant/api-toolkit-spec/openapi/consumers.yaml`).
 - **Diseño:** `ADR-api-consumers-y-subscriber-sin-estado.md` (D1, D3, D4, D5), en el repo de documentación.
 - **Hermano:** [`bgal-api-sub`](https://github.com/ferluko/bgal-api-sub) (suscripciones; sin acceso a Vault).
 
