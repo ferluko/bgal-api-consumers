@@ -80,6 +80,21 @@ VD_OUT=…/.out/vault-dev SUBSCRIBER_TOKEN_FILE=<OUT del Subscriber>/api-token .
 ./deploy/scripts/lab-podman.sh vault && ./deploy/scripts/lab-podman.sh run
 ```
 
+### Credenciales preexistentes (`Unmanaged`)
+
+Una credencial que dejó otro proceso (DevSecOps, 3scale) no tiene la metadata de la API Consumers: se informa
+`Unmanaged` y el API Subscriber no la suscribe (422 "adoptarla antes de suscribir"). Para adoptarla a mano, con el
+`app_id` que informa el dueño (su Secret `secret-apim-<tenant>`) o DevSecOps (la API Consumers no lee datos):
+
+```bash
+OWNER="<equipo>" REF=<UR> ./deploy/scripts/adopt-credential.sh adopt <ns> <ambiente> <tenant> <app_id>
+./deploy/scripts/adopt-credential.sh fix-app-id <ns> <ambiente> <tenant> <app_id_actual> <app_id_correcto>
+```
+
+Muestra el plan y pide confirmación (`DRY_RUN=1` solo el plan). Escribe la metadata y reserva el app_id en el índice,
+sin tocar los datos ni crear una versión. Una vez adoptada, la API Consumers puede rotarla y darla de baja: acordarlo
+con el dueño. Detalle y variables en el encabezado del script.
+
 ## Pendientes conocidos
 
 - **Rol de Vault con la policy de D3** en el kit `vault-dev` (hoy el lab usa el AppRole `apim-subscriber-nonprd`, que además puede leer) y en HCP.
