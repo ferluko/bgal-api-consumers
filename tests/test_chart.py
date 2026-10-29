@@ -50,6 +50,9 @@ def test_lab_render():
     )
     paths = {i["key"]: i["path"] for i in vol["secret"]["items"]}
     assert paths["vault_secret_id"] == "APICON_VAULT_SECRET_ID" and paths["subscriber_url"] == "APICON_SUBSCRIBER_URL"
+    # 3scale (0.3.0): los tokens de los admins como archivo; los admins y la cuenta los pasa toolkit-up (sin hosts acá)
+    assert paths["threescale_tokens"] == "APICON_THREESCALE_TOKENS"
+    assert env["APICON_THREESCALE_ADMINS"] == "[]" and env["APICON_THREESCALE_ACCOUNT_EMAIL"] == ""
 
 
 def test_prd_render_usa_eso_y_auth_kubernetes():

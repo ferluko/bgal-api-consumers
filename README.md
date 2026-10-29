@@ -19,9 +19,11 @@ Null / DevOps Connect / DevSecOps ──► API Consumers ──write (cas, sin 
 
 ## Invariantes
 
-- **Escribe sin leer keys (D3).** El cliente de Vault no tiene método para leer datos: solo escritura con
-  check-and-set y metadata. Probado contra Vault 2.1.1 con la policy mínima (`data`: create/update; `metadata`:
-  read/list/update): todo funciona y leer un valor da `403`.
+- **Escribe sin leer keys (D3), salvo para 3scale.** El cliente de Vault escribe con check-and-set y lee metadata.
+  Probado contra Vault 2.1.1 con la policy mínima (`data`: create/update; `metadata`: read/list/update): todo funciona y
+  leer un valor da `403`. **Excepción del 29/10 (0.3.0):** para dar de alta la application de una suscripción en 3scale
+  con la misma key, la API Consumers la lee (`read_field`, solo desde `threescale.py`) con el mismo rol, al que se le
+  suma `read`.
 - **La key nunca sale del proceso.** Ni respuestas, ni logs (redacción), ni metadata, ni llamadas al API Subscriber,
   que solo recibe números de versión. Hay un test que la busca en todo eso.
 - **Sin estado propio.** Consumidor y rotación viven en la `custom_metadata` del secreto. Unicidad de App ID y
@@ -100,4 +102,4 @@ con el dueño. Detalle y variables en el encabezado del script.
 - **Rol de Vault con la policy de D3** en el kit `vault-dev` (hoy el lab usa el AppRole `apim-subscriber-nonprd`, que además puede leer) y en HCP.
 - **Índices fuera de `consumers/`** (`index/*`, como dice el ADR) cuando exista la policy propia.
 - **`Lease`** para más de una réplica: hoy las rotaciones en curso las avanza el proceso que las aceptó (o el que arranca, con `recover`).
-- **3scale real** (importación y sincronización en convivencia).
+- **3scale:** applications de las suscripciones desde 0.3.0 (`/v1/consumers/{ns}/threescale/{cluster}/applications/{apiId}`); falta la prueba contra el admin real y la importación de credenciales existentes.

@@ -68,7 +68,7 @@ spec:
             defaultMode: 0440
             optional: true
             items:
-              {{- range $k := list "api_tokens" "callback_secret" "vault_role_id" "vault_secret_id" "vault_token" "subscriber_url" "subscriber_token" }}
+              {{- range $k := list "api_tokens" "callback_secret" "vault_role_id" "vault_secret_id" "vault_token" "subscriber_url" "subscriber_token" "threescale_tokens" }}
               - {key: {{ $k }}, path: {{ printf "APICON_%s" (upper $k) }}}
               {{- end }}
       {{- with $a.nodeSelector }}

@@ -30,6 +30,7 @@ from .config import TENANTS, Settings
 from .errors import Problem, conflict, not_found, not_implemented, unprocessable
 from .integrations import ThreeScale, deliver_callback
 from .subscriber import Subscriber
+from .threescale import Applications
 from .vault import CasMismatch, Vault, fingerprint, generate_app_id, generate_app_key, now
 
 log = logging.getLogger(__name__)
@@ -113,13 +114,20 @@ class Runner:
 
 class Service:
     def __init__(
-        self, settings: Settings, vault: Vault, subscriber: Subscriber, threescale: ThreeScale, runner: Runner
+        self,
+        settings: Settings,
+        vault: Vault,
+        subscriber: Subscriber,
+        threescale: ThreeScale,
+        runner: Runner,
+        applications: Applications | None = None,
     ):
         self.s = settings
         self.vault = vault
         self.subscriber = subscriber
         self.threescale = threescale
         self.runner = runner
+        self.apps = applications or Applications(settings, vault)
         self._locks: dict[str, threading.RLock] = defaultdict(threading.RLock)
         self._guard = threading.Lock()
         self._driving: set[str] = set()
@@ -322,6 +330,76 @@ class Service:
             raise not_found(f"consumidor {cr.label}")
         return self.consumer_view(cr, md)
 
+    # ======================================================= 3scale (0.3.0)
+    def _custom(self, cr: Cred, write: bool = False) -> dict:
+        md = self._meta(cr)
+        if not md:
+            raise not_found(f"consumidor {cr.label}")
+        c = md["custom"]
+        if not _managed(c):
+            raise conflict(f"{cr.label}: {UNMANAGED}")
+        if write and c.get("state") == "revoked":
+            raise conflict(f"{cr.label} está revocado")
+        return c
+
+    def threescale_get(self, cr: Cred, cluster: str, service_id: str | None, system_name: str | None) -> dict:
+        view = self.apps.get(self._custom(cr), cluster, cr.tenant, service_id, system_name)
+        if not view:
+            raise not_found(f"sin application de {cr.label} en el 3scale de {cluster}")
+        return view
+
+    def threescale_put(
+        self, cr: Cred, cluster: str, service_id: str | None, system_name: str | None, req: dict
+    ) -> dict:
+        """La application de una suscripción en el admin de 3scale de ese cluster (la pide el API Subscriber)."""
+        with self._lock(cr):
+            c = self._custom(cr, write=True)
+            sigla = (req.get("consumerSigla") or c.get("sigla") or cr.namespace.split("-")[0]).upper()
+            view = self.apps.put(
+                cr.path,
+                cr.app_key_field,
+                c,
+                cluster,
+                cr.tenant,
+                service_id,
+                system_name,
+                sigla,
+                req["planId"],
+                req.get("name"),
+            )
+            if c.get("threescale_sigla") != sigla:  # la cuenta de 3scale, para la consulta, la baja y la rotación
+                self.vault.set_metadata(cr.path, {"threescale_sigla": sigla})
+            return view
+
+    def threescale_delete(self, cr: Cred, cluster: str, service_id: str | None, system_name: str | None) -> bool:
+        with self._lock(cr):
+            return self.apps.delete(self._custom(cr), cluster, cr.tenant, service_id, system_name)
+
+    def _threescale_keys(self, cr: Cred, custom: dict, step: str, app_key: str | None = None) -> None:
+        """Rotación en 3scale: agrega la key nueva (KeyWritten) o saca las viejas (Completed) en las applications del
+        app_id, en los clusters de 3scale donde el consumidor tiene suscripciones (las informa el API Subscriber)."""
+        if not self.apps.enabled:
+            return
+        try:
+            subs = self.subscriber.list_subscriptions(cr.namespace)
+            clusters = [
+                cl["cluster"]
+                for sub in subs
+                if (sub.get("tenant") or cr.tenant) == cr.tenant
+                for cl in sub.get("clusters") or []
+                if cl.get("platform") == "3scale"
+            ]
+            if not clusters:
+                return
+            if step == "add":
+                n = self.apps.add_key(custom, clusters, cr.tenant, app_key or "")
+            else:
+                n = self.apps.prune_keys(cr.path, cr.app_key_field, custom, clusters, cr.tenant)
+            self.vault.set_metadata(cr.path, {"threescale_keys": f"{step}:{n}"})
+        except Problem as e:  # la rotación sigue: la key nueva ya está en Vault; 3scale se corrige a mano o rotando
+            self.vault.set_metadata(cr.path, {"threescale_keys": f"{step}:Failed"})
+            log.warning("rotación de %s en 3scale (%s): %s", cr.label, step, e.detail)
+
     def delete_consumer(self, cr: Cred, idem_key: str) -> dict:
         ns = cr.namespace
         with self._lock(cr):
@@ -499,6 +577,7 @@ class Service:
                         self._set_rot(cr, error=f"el API Subscriber no confirmó el cierre de la ventana ({res})")
                         return
                     if st == "Completing":
+                        self._threescale_keys(cr, c, "prune")
                         self.vault.set_metadata(cr.path, {"rotated_at": now()})
                     self._set_rot(cr, state="Completed" if st == "Completing" else "Aborted", error="")
                     self._callback(cr)
@@ -544,6 +623,7 @@ class Service:
                 except Problem as e:
                     self.vault.set_metadata(cr.path, {"threescale_state": "Failed"})
                     log.warning("sync 3scale falló para %s: %s", cr.label, e.detail)
+            self._threescale_keys(cr, c, "add", app_key)
             del app_key
             self._set_rot(cr, state="KeyWritten", new_version=new)
             return True

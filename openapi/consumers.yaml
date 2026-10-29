@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: API Consumers
-  version: 0.2.2-draft
+  version: 0.3.0-draft
   description: |
     Identidad del consumidor: una credencial (App ID / App Key) por namespace **y tenant**, su alta, baja y rotación.
     Es el **único** servicio que escribe credenciales en Vault, con la convención de DevSecOps (06/10 y 07/10):
@@ -12,7 +12,9 @@ info:
     (D1, D3, D4, D5) · ADR-gitops-apis-y-boveda.md §6.
 
     **Nunca devuelve ni registra el App Key**, y **no lo lee de Vault**: lo genera (o lo importa de 3scale) y lo
-    escribe. Su policy es `create/update` sobre `openshift-<amb>/data/+/secret-apim-*`, `read/list/update` sobre
+    escribe. **Excepción (29/10, 0.3.0):** la lee solo para dar de alta la application de una suscripción en 3scale
+    con la misma key (y agregarle la key nueva en una rotación); con el mismo AppRole, y en el código solo desde el
+    cliente de 3scale. Su policy es `create/read/update` sobre `openshift-<amb>/data/+/secret-apim-*`, `read/list/update` sobre
     `openshift-<amb>/metadata/...` y `create` (con `cas`) sobre el índice en `apim-<tier>`; sin `delete` ni `destroy`.
 
     Cambios 0.2.0 (07/10): path de Vault de DevSecOps; credencial por namespace × tenant; `environment` y `tenant`
@@ -38,6 +40,13 @@ info:
     Consumers (no tiene su metadata: ni `created_by` ni `app_id`) se informa como `Unmanaged`. Rotarla o darla de baja
     escribiría un `app_id` vacío y le rompería la credencial al consumidor, así que esas operaciones dan 409 hasta que
     se adopte.
+
+    **3scale (0.3.0, 29/10):** el API Subscriber 0.11.0 decide en qué clusters de 3scale se suscribe un consumidor
+    (legacy apps0: solo 3scale; multicluster appsN: 3scale y Kuadrant) y pide acá la application: una por servicio
+    (API) en la cuenta de la sigla, con el app_id y la app_key de la credencial, en el admin de 3scale de ese cluster
+    (uno por cluster y tenant, también en el par pg/mz). Los admins permitidos y sus tokens son configuración
+    (`APICON_THREESCALE_ADMINS`, `APICON_THREESCALE_TOKENS`): un cluster sin admin da 422. En una rotación, la key
+    nueva se agrega a esas applications (3scale admite varias: es el solapamiento) y al completar se sacan las demás.
 servers:
   - url: https://api-consumers.apim.<dominio-interno>
 security:
@@ -45,6 +54,7 @@ security:
 tags:
   - name: consumers
   - name: rotations
+  - name: threescale
 paths:
   /v1/consumers:
     post:
@@ -237,6 +247,97 @@ paths:
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
+  /v1/consumers/{namespace}/threescale/{cluster}/applications/{apiId}:
+    parameters:
+      - $ref: '#/components/parameters/Namespace'
+      - $ref: '#/components/parameters/Environment'
+      - $ref: '#/components/parameters/Tenant'
+      - name: cluster
+        in: path
+        required: true
+        description: Cluster de 3scale (paas-qas, paas-apps1-prdpg…); tiene que tener admin configurado.
+        schema: { type: string }
+      - name: apiId
+        in: path
+        required: true
+        schema: { type: string }
+      - name: serviceId
+        in: query
+        description: Id del servicio en 3scale (json_ci del ticket). Si no está en ese admin, se busca por systemName.
+        schema: { type: string }
+      - name: systemName
+        in: query
+        schema: { type: string }
+    get:
+      tags: [threescale]
+      summary: La application del consumidor para ese servicio (sin keys). 404 si no existe.
+      operationId: getThreeScaleApplication
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ThreeScaleApplication' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422':
+          description: Cluster sin admin de 3scale configurado o sin token, servicio inexistente en ese admin, sigla sin cuenta (y sin APICON_THREESCALE_ACCOUNT_EMAIL) o tenant/ambiente inválidos.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '501': { description: Sin admins de 3scale configurados. }
+        '503': { $ref: '#/components/responses/DependencyUnavailable' }
+    put:
+      tags: [threescale]
+      summary: Crea la application con la key de la credencial (la lee de Vault) o, si ya existe con este app_id, le cambia el plan. Idempotente.
+      description: |
+        Cuenta = sigla (username); si no existe y hay `APICON_THREESCALE_ACCOUNT_EMAIL`, se crea. Plan de 3scale: el de
+        system_name igual a `planId`, si no el default del servicio, si no el primero; el `planId` pedido queda en la
+        descripción. Nunca devuelve la key.
+      operationId: putThreeScaleApplication
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [planId]
+              properties:
+                planId: { type: string }
+                consumerSigla: { type: string, description: Sigla consumidora del ticket (cuenta de 3scale). }
+                approvalRef: { type: string }
+                name: { type: string, description: subscriptionId del API Subscriber. }
+      responses:
+        '200':
+          description: Creada o actualizada.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ThreeScaleApplication' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Consumidor revocado o preexistente sin adoptar, o 3scale rechazó la application (p. ej. application_id tomado).
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422':
+          description: Cluster sin admin de 3scale configurado o sin token, servicio inexistente en ese admin, sigla sin cuenta (y sin APICON_THREESCALE_ACCOUNT_EMAIL) o tenant/ambiente inválidos.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '501': { description: Sin admins de 3scale configurados. }
+        '503': { $ref: '#/components/responses/DependencyUnavailable' }
+    delete:
+      tags: [threescale]
+      summary: Borra la application (baja o compensación de la suscripción).
+      operationId: deleteThreeScaleApplication
+      responses:
+        '204': { description: Borrada. }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422':
+          description: Cluster sin admin de 3scale configurado o sin token, servicio inexistente en ese admin, sigla sin cuenta (y sin APICON_THREESCALE_ACCOUNT_EMAIL) o tenant/ambiente inválidos.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503': { $ref: '#/components/responses/DependencyUnavailable' }
 components:
   securitySchemes:
     oidc:
@@ -347,6 +448,16 @@ components:
           properties:
             threescale: { $ref: '#/components/schemas/SyncState' }
         secretApimManifest: { type: string, description: ExternalSecret secret-apim-<tenant> renderizado (solo en la respuesta del alta). }
+    ThreeScaleApplication:
+      type: object
+      properties:
+        applicationId: { type: string, description: Id interno de 3scale. }
+        appId: { type: string }
+        serviceId: { type: string }
+        systemName: { type: string }
+        planId: { type: string, description: El plan pedido por el API Subscriber (descripción de la application). }
+        threescalePlan: { type: string, description: El application plan de 3scale que se usó. }
+        state: { type: string }
     Rotation:
       type: object
       properties:
