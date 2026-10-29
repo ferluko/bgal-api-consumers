@@ -84,6 +84,7 @@ class Settings(BaseSettings):
     threescale_tokens: str = ""  # Secret: JSON {"<cluster>/<tenant>": access_token} (scope account_management)
     threescale_account_email: str = ""  # template ({sigla}) para crear la cuenta de la sigla; vacío = no la crea
     threescale_verify: bool = True
+    threescale_ca_file: str = ""  # bundle de CA para los admins (en OpenShift, el trusted-ca-bundle inyectado)
     threescale_timeout_s: float = 30
     callback_secret: str = ""
     callback_retries: int = 3

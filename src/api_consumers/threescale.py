@@ -50,6 +50,7 @@ class Admin(Protocol):
         self, account_id: str, plan_id: str, name: str, description: str, app_id: str, app_key: str
     ) -> dict: ...
     def update_application(self, account_id: str, app: str, plan_id: str, description: str) -> dict: ...
+    def accept_application(self, account_id: str, app: str) -> dict: ...
     def delete_application(self, account_id: str, app: str) -> None: ...
     def keys(self, account_id: str, app: str) -> list[str]: ...
     def add_key(self, account_id: str, app: str, key: str) -> None: ...
@@ -127,6 +128,10 @@ class HttpAdmin:
         self._req("PUT", f"{base}/change_plan.json", data={"plan_id": plan_id})
         return (self._req("PUT", f"{base}.json", data={"description": description}) or {}).get("application") or {}
 
+    def accept_application(self, account_id: str, app: str) -> dict:
+        r = self._req("PUT", f"/admin/api/accounts/{account_id}/applications/{app}/accept.json", data={})
+        return (r or {}).get("application") or {}
+
     def delete_application(self, account_id: str, app: str) -> None:
         self._req("DELETE", f"/admin/api/accounts/{account_id}/applications/{app}.json")
 
@@ -144,9 +149,12 @@ class HttpAdmin:
 class MemoryAdmin:
     """Tests: un admin de 3scale en memoria (servicios, cuentas, applications y keys)."""
 
-    def __init__(self, services: dict[str, str] | None = None, plans: list[str] | None = None):
+    def __init__(
+        self, services: dict[str, str] | None = None, plans: list[str] | None = None, approval: set[str] | None = None
+    ):
         self.services = {sid: {"id": sid, "system_name": name} for sid, name in (services or {}).items()}
         self.plan_names = plans or ["default"]
+        self.approval = approval or set()  # planes que exigen aprobación en 3scale: la application nace pending
         self.accounts: dict[str, dict] = {}
         self.apps: dict[str, dict] = {}  # id interno → application (con "keys")
 
@@ -181,13 +189,17 @@ class MemoryAdmin:
             "description": description,
             "application_id": app_id,
             "keys": [app_key],
-            "state": "live",
+            "state": "pending" if plan_id.split("-", 1)[1] in self.approval else "live",
         }
         self.apps[app["id"]] = app
         return app
 
     def update_application(self, account_id: str, app: str, plan_id: str, description: str) -> dict:
         self.apps[app].update(plan_id=plan_id, description=description)
+        return self.apps[app]
+
+    def accept_application(self, account_id: str, app: str) -> dict:
+        self.apps[app]["state"] = "live"
         return self.apps[app]
 
     def delete_application(self, account_id: str, app: str) -> None:
@@ -251,7 +263,10 @@ class Applications:
         return bool(self.rules)
 
     def _http(self, url: str, token: str) -> Admin:
-        return HttpAdmin(url, token, verify=self.s.threescale_verify, timeout_s=self.s.threescale_timeout_s)
+        # los admins de nonprod presentan solo el certificado del servidor, sin la CA NoProd Intermedia (H-29): en
+        # OpenShift, el bundle de confianza del cluster (inject-trusted-cabundle) la trae
+        verify: bool | str = self.s.threescale_ca_file or self.s.threescale_verify
+        return HttpAdmin(url, token, verify=verify, timeout_s=self.s.threescale_timeout_s)
 
     def admin(self, cluster: str, tenant: str) -> Admin:
         if not self.enabled:
@@ -333,6 +348,10 @@ class Applications:
                 app = admin.create_application(str(acc["id"]), str(plan["id"]), f"{sigla}App", desc, app_id, app_key)
             finally:
                 del app_key
+        if app.get("state") == "pending":
+            # plan de 3scale con aprobación (H-29): la application nace pending y no autoriza tráfico. La aprobación
+            # ya la dio el owner en ServiceNow (el ticket de la suscripción): se acepta acá.
+            app = admin.accept_application(str(acc["id"]), str(app["id"])) or app
         names = {str(p["id"]): p.get("system_name") or p.get("name") for p in plans}
         return _view(app, svc, names)
 

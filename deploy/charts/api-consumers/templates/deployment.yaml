@@ -58,8 +58,19 @@ spec:
           volumeMounts:
             - {name: tmp, mountPath: /tmp}
             - {name: secrets, mountPath: /etc/api-consumers/secrets, readOnly: true}
+            {{- if or $a.threescale.injectTrustedCA $a.threescale.caConfigMap }}
+            - {name: trusted-ca, mountPath: /etc/api-consumers/trusted-ca, readOnly: true}
+            {{- end }}
       volumes:
         - {name: tmp, emptyDir: {}}
+        {{- if or $a.threescale.injectTrustedCA $a.threescale.caConfigMap }}
+        # CA de los admins de 3scale: el bundle de confianza del cluster (OpenShift lo completa en el ConfigMap con el
+        # label inject-trusted-cabundle) o un ConfigMap propio con la key ca-bundle.crt (caConfigMap, p. ej. EKS)
+        - name: trusted-ca
+          configMap:
+            name: {{ $a.threescale.caConfigMap | default "api-consumers-trusted-ca" }}
+            items: [{key: ca-bundle.crt, path: ca-bundle.crt}]
+        {{- end }}
         # Un archivo APICON_<CAMPO> por key (pydantic-settings secrets_dir), fuera del entorno del proceso.
         # optional: cada key puede faltar según el modo (approle/token/kubernetes).
         - name: secrets

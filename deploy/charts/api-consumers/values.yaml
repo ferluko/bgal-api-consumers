@@ -49,6 +49,11 @@ apiConsumers:
     admins: []
     accountEmail: ""                              # template con {sigla}; vacío = no crea cuentas de sigla
     verify: true
+    # CA de los admins de 3scale (opcional; sin nada, la de la imagen). Los de nonprod no mandan la CA intermedia
+    # (H-29) y el pod no la trae: en OpenShift, injectTrustedCA monta el bundle de confianza del cluster; en otro
+    # cluster, caConfigMap = un ConfigMap propio con la key ca-bundle.crt (manda sobre injectTrustedCA).
+    injectTrustedCA: false
+    caConfigMap: ""
 
   # Vault: escribe credenciales con check-and-set; lee la key solo para 3scale (excepción a D3 del 29/10). Policy:
   #   data/secret-apim-*: create, read, update · metadata: read, list, update · sin delete ni destroy

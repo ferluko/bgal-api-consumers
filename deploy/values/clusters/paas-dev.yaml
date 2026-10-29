@@ -30,3 +30,7 @@ apiConsumers:
     mount: apim-nonprod                           # índices de unicidad (en admin existe apim-nonprod, no apim-nonprd)
   eso:
     consumerStore: {kind: ClusterSecretStore, name: vault-apim-consumer-nonprd}
+  # Los admins de 3scale de nonprod no mandan la CA NoProd Intermedia; el trusted-ca-bundle de paas-dev sí la trae
+  # (H-29). Admins y email de la cuenta: los pasa toolkit-up.sh (bgal-api-sub).
+  threescale:
+    injectTrustedCA: true

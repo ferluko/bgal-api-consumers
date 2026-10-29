@@ -35,7 +35,23 @@ data:
   APICON_THREESCALE_ADMINS: {{ toJson $a.threescale.admins | quote }}
   APICON_THREESCALE_ACCOUNT_EMAIL: {{ $a.threescale.accountEmail | quote }}
   APICON_THREESCALE_VERIFY: {{ $a.threescale.verify | quote }}
+  {{- if or $a.threescale.injectTrustedCA $a.threescale.caConfigMap }}
+  APICON_THREESCALE_CA_FILE: /etc/api-consumers/trusted-ca/ca-bundle.crt
+  {{- end }}
   APICON_CALLBACK_RETRIES: {{ $c.callbackRetries | quote }}
   APICON_WORKER_MODE: {{ $c.workerMode | quote }}
   APICON_WORKER_THREADS: {{ $c.workerThreads | quote }}
   APICON_LOG_LEVEL: {{ $c.logLevel | quote }}
+{{- if and $a.threescale.injectTrustedCA (not $a.threescale.caConfigMap) }}
+---
+# OpenShift (Cluster Network Operator) completa ca-bundle.crt con el bundle de confianza del cluster: los admins de
+# 3scale de nonprod presentan solo el certificado del servidor, sin la CA NoProd Intermedia (H-29).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-consumers-trusted-ca
+  namespace: {{ include "apicon.ns" . }}
+  labels:
+    {{- include "apicon.labels" . | nindent 4 }}
+    config.openshift.io/inject-trusted-cabundle: "true"
+{{- end }}

@@ -148,3 +148,15 @@ def test_la_lectura_de_la_key_vive_solo_en_threescale():
     """Excepción a D3 (29/10): Vault.read_field solo desde el cliente de 3scale."""
     users = [p.name for p in (ROOT / "src/api_consumers").glob("*.py") if ".read_field(" in p.read_text()]
     assert users == ["threescale.py"]
+
+
+def test_plan_con_aprobacion_acepta_la_application(ts):
+    """H-29: un plan de 3scale con aprobación deja la application pending (no autoriza tráfico). La aprobación ya la dio
+    ServiceNow: la API Consumers la acepta."""
+    c, _parts, admins = ts
+    onboard(c)
+    admin = MemoryAdmin(SERVICES, plans=["Prueba"], approval={"Prueba"})
+    admins["https://b2c-admin.paas-qas.example"] = admin
+    r = _put(c, plan="bronze")
+    assert r.status_code == 200 and r.json()["state"] == "live", r.text
+    assert next(iter(admin.apps.values()))["state"] == "live"
