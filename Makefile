@@ -20,10 +20,10 @@ test:               ## unit + contrato (sin infraestructura)
 	$(PY) -m pytest -q
 
 lint:
-	ruff check src tests && ruff format --check src tests && shellcheck -S warning deploy/scripts/*.sh
+	ruff check src tests deploy/scripts && ruff format --check src tests deploy/scripts && shellcheck -S warning deploy/scripts/*.sh
 
 fmt:
-	ruff format src tests && ruff check --fix src tests
+	ruff format src tests deploy/scripts && ruff check --fix src tests deploy/scripts
 
 run-dev:            ## API local en :8081 (token "dev"): Vault en memoria, API Subscriber simulada
 	APICON_VAULT_MODE=memory APICON_SUBSCRIBER_MODE=fake APICON_API_TOKENS=dev APICON_ROTATION_POLL_S=0.5 \
