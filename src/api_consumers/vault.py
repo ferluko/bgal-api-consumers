@@ -62,11 +62,16 @@ class Vault(Protocol):
     def list(self, prefix: str) -> list[str]:
         """Claves bajo `prefix` (metadata list)."""
 
+    def read_field(self, path: str, field: str) -> str | None:
+        """Un campo de la versión actual. Solo lo usa el cliente de 3scale (threescale.py): es la excepción a D3 del
+        29/10 para dar de alta la application con la misma app_key. None si no existe."""
+
     def healthy(self) -> bool: ...
 
 
 class MemoryVault:
-    """Tests y desarrollo local. Simula versiones, cas, max_versions y metadata de KV v2. Sin lectura de datos."""
+    """Tests y desarrollo local. Simula versiones, cas, max_versions y metadata de KV v2. Lectura de datos solo con
+    `read_field` (3scale, excepción a D3)."""
 
     def __init__(self, max_versions: int = 10) -> None:
         self.max_versions = max_versions
@@ -101,6 +106,10 @@ class MemoryVault:
         for k in drop or ():
             m.pop(k, None)
         m.update(custom_metadata(metadata))
+
+    def read_field(self, path: str, field: str) -> str | None:
+        cur = self.current.get(path)
+        return (self.data.get(path, {}).get(cur) or {}).get(field) if cur else None
 
     def list(self, prefix: str) -> list[str]:
         prefix = prefix.rstrip("/") + "/"
@@ -206,6 +215,15 @@ class HvacVault:
         merged = {**existing, **custom_metadata(metadata)}
         mount, rel = split_mount(path)
         self._call(kv.update_metadata, path=rel, custom_metadata=merged, mount_point=mount)
+
+    def read_field(self, path: str, field: str) -> str | None:
+        kv = self.client.secrets.kv.v2
+        try:
+            mount, rel = split_mount(path)
+            r = self._call(kv.read_secret_version, path=rel, mount_point=mount, raise_on_deleted_version=True)
+        except self._hvac.exceptions.InvalidPath:
+            return None
+        return (((r or {}).get("data") or {}).get("data") or {}).get(field)
 
     def list(self, prefix: str) -> list[str]:
         kv = self.client.secrets.kv.v2

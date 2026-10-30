@@ -45,3 +45,12 @@ class RotationRequest(_Base):
 
 class RotationAction(_Base):
     action: Literal["complete", "abort"]
+
+
+class ThreeScaleApplicationRequest(_Base):
+    """Lo que manda el API Subscriber (0.11.0) para la application de una suscripción en 3scale. Nunca la key."""
+
+    planId: str = Field(min_length=1)  # noqa: N815
+    consumerSigla: str | None = None  # noqa: N815
+    approvalRef: str | None = None  # noqa: N815
+    name: str | None = None  # subscriptionId del API Subscriber (va en la descripción de la application)

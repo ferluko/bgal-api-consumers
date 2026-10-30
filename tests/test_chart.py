@@ -50,6 +50,9 @@ def test_lab_render():
     )
     paths = {i["key"]: i["path"] for i in vol["secret"]["items"]}
     assert paths["vault_secret_id"] == "APICON_VAULT_SECRET_ID" and paths["subscriber_url"] == "APICON_SUBSCRIBER_URL"
+    # 3scale (0.3.0): los tokens de los admins como archivo; los admins y la cuenta los pasa toolkit-up (sin hosts acá)
+    assert paths["threescale_tokens"] == "APICON_THREESCALE_TOKENS"
+    assert env["APICON_THREESCALE_ADMINS"] == "[]" and env["APICON_THREESCALE_ACCOUNT_EMAIL"] == ""
 
 
 def test_prd_render_usa_eso_y_auth_kubernetes():
@@ -92,3 +95,25 @@ def test_paas_dev_vault_corporativo():
         "admin",
         "true",
     )
+
+
+def test_ca_de_confianza_para_los_admins_de_3scale():
+    """H-29: los admins de 3scale de nonprod no mandan la CA intermedia; en OpenShift se monta el trusted-ca-bundle."""
+    p, docs = render(LAB, "apiConsumers.threescale.injectTrustedCA=true")
+    assert p.returncode == 0, p.stderr
+    cm = by_kind(docs, "ConfigMap", "api-consumers-trusted-ca")[0]
+    assert cm["metadata"]["labels"]["config.openshift.io/inject-trusted-cabundle"] == "true"
+    env = by_kind(docs, "ConfigMap", "api-consumers-env")[0]["data"]
+    assert env["APICON_THREESCALE_CA_FILE"] == "/etc/api-consumers/trusted-ca/ca-bundle.crt"
+    spec = by_kind(docs, "Deployment")[0]["spec"]["template"]["spec"]
+    assert any(v["name"] == "trusted-ca" for v in spec["volumes"])
+    _, docs = render(LAB)
+    assert not by_kind(docs, "ConfigMap", "api-consumers-trusted-ca"), "solo si se pide (OpenShift)"
+    # ConfigMap propio (EKS u otro cluster): se monta ese y no se crea el inyectado
+    p, docs = render(LAB, "apiConsumers.threescale.caConfigMap=ca-corporativa")
+    assert p.returncode == 0, p.stderr
+    assert not by_kind(docs, "ConfigMap", "api-consumers-trusted-ca")
+    spec = by_kind(docs, "Deployment")[0]["spec"]["template"]["spec"]
+    assert next(v for v in spec["volumes"] if v["name"] == "trusted-ca")["configMap"]["name"] == "ca-corporativa"
+    env = by_kind(docs, "ConfigMap", "api-consumers-env")[0]["data"]
+    assert env["APICON_THREESCALE_CA_FILE"] == "/etc/api-consumers/trusted-ca/ca-bundle.crt"

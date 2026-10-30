@@ -9,14 +9,14 @@ from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, Header, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
 from . import __version__
 from .config import Settings, get_settings
 from .errors import Problem
 from .integrations import build_threescale
 from .logging_setup import setup_logging
-from .models import ConsumerRequest, RotationAction, RotationRequest
+from .models import ConsumerRequest, RotationAction, RotationRequest, ThreeScaleApplicationRequest
 from .service import Cred, Runner, Service
 from .subscriber import build_subscriber
 from .vault import build_vault
@@ -141,6 +141,48 @@ def create_app(settings: Settings | None = None, service: Service | None = None)
         sv: Service = Depends(svc),
     ):
         return JSONResponse(sv.update_rotation(c, rotation_id, body.action), status_code=202)
+
+    # ------------------------------------------------- 3scale (0.3.0, 29/10)
+    # La application de una suscripción en el admin de 3scale de un cluster. La pide el API Subscriber 0.11.0; el
+    # servicio, por serviceId o systemName (query). La key la pone la API Consumers: nunca viaja en el pedido ni en la
+    # respuesta.
+    apps = "/v1/consumers/{namespace}/threescale/{cluster}/applications/{api_id}"
+
+    @app.get(apps, dependencies=deps, tags=["threescale"])
+    def get_threescale_application(
+        cluster: str,
+        api_id: str,  # noqa: ARG001 (identifica el recurso; el servicio va en la query)
+        serviceId: str | None = Query(default=None),  # noqa: N803
+        systemName: str | None = Query(default=None),  # noqa: N803
+        c: Cred = Depends(cred),
+        sv: Service = Depends(svc),
+    ):
+        return sv.threescale_get(c, cluster, serviceId, systemName)
+
+    @app.put(apps, dependencies=deps, tags=["threescale"])
+    def put_threescale_application(
+        cluster: str,
+        api_id: str,  # noqa: ARG001
+        body: ThreeScaleApplicationRequest,
+        serviceId: str | None = Query(default=None),  # noqa: N803
+        systemName: str | None = Query(default=None),  # noqa: N803
+        c: Cred = Depends(cred),
+        sv: Service = Depends(svc),
+    ):
+        return sv.threescale_put(c, cluster, serviceId, systemName, body.model_dump(exclude_none=True))
+
+    @app.delete(apps, status_code=204, dependencies=deps, tags=["threescale"])
+    def delete_threescale_application(
+        cluster: str,
+        api_id: str,  # noqa: ARG001
+        serviceId: str | None = Query(default=None),  # noqa: N803
+        systemName: str | None = Query(default=None),  # noqa: N803
+        c: Cred = Depends(cred),
+        sv: Service = Depends(svc),
+    ):
+        if not sv.threescale_delete(c, cluster, serviceId, systemName):
+            raise Problem(404, "Not Found", f"sin application de {c.label} en el 3scale de {cluster}")
+        return Response(status_code=204)
 
     return app
 

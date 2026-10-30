@@ -42,8 +42,21 @@ apiConsumers:
     callbackRetries: 3
     logLevel: INFO
 
-  # Vault: escribe credenciales con check-and-set y NUNCA lee valores (ADR API Consumers D3). Policy mínima:
-  #   data/consumers/*: create, update · metadata/consumers/*: read, list, update · sin delete ni destroy
+  # Applications de 3scale de las suscripciones (0.3.0, 29/10). `admins` ([{match, adminUrl}]) y `accountEmail` los
+  # pasa toolkit-up.sh (bgal-api-sub) desde el chart del API Subscriber: este repo es público, acá no van hosts. Los
+  # tokens de los admins, en el Secret (key threescale_tokens: JSON {"<cluster>/<tenant>": token}). Sin admins: 501.
+  threescale:
+    admins: []
+    accountEmail: ""                              # template con {sigla}; vacío = no crea cuentas de sigla
+    verify: true
+    # CA de los admins de 3scale (opcional; sin nada, la de la imagen). Los de nonprod no mandan la CA intermedia
+    # (H-29) y el pod no la trae: en OpenShift, injectTrustedCA monta el bundle de confianza del cluster; en otro
+    # cluster, caConfigMap = un ConfigMap propio con la key ca-bundle.crt (manda sobre injectTrustedCA).
+    injectTrustedCA: false
+    caConfigMap: ""
+
+  # Vault: escribe credenciales con check-and-set; lee la key solo para 3scale (excepción a D3 del 29/10). Policy:
+  #   data/secret-apim-*: create, read, update · metadata: read, list, update · sin delete ni destroy
   vault:
     addr: ""                                      # REQUERIDO
     auth: kubernetes                              # kubernetes | approle | token

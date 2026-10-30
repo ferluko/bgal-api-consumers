@@ -12,12 +12,14 @@ from api_consumers.vault import HvacVault, MemoryVault
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_el_cliente_de_vault_no_puede_leer_datos():
-    """D3: escribir sin leer. No existe método de lectura de datos (solo metadata)."""
+def test_el_cliente_de_vault_solo_lee_un_campo_para_3scale():
+    """D3: escribir sin leer, con una excepción (29/10): `read_field`, que usa solo el cliente de 3scale para dar de
+    alta la application con la misma key (tests/test_threescale.py verifica quién lo llama). Ningún otro método de
+    lectura de datos."""
     for cls in (HvacVault, MemoryVault):
-        assert not [m for m in dir(cls) if m.startswith("read")], cls
+        assert [m for m in dir(cls) if m.startswith("read")] == ["read_field"], cls
     src = (ROOT / "src/api_consumers/vault.py").read_text()
-    assert "read_secret_version" not in src and "read_secret(" not in src
+    assert src.count("read_secret_version") == 1 and "read_secret(" not in src
 
 
 def test_la_key_no_aparece_en_respuestas_metadata_ni_logs(client, parts, capfd):
@@ -52,7 +54,7 @@ def test_openapi_valido_y_rutas_alineadas(client):
         path = getattr(r, "path", "")
         if path.startswith("/v1/"):
             for m in r.methods - {"HEAD", "OPTIONS"}:
-                app_routes.add((m, path.replace("{rotation_id}", "{rotationId}")))
+                app_routes.add((m, path.replace("{rotation_id}", "{rotationId}").replace("{api_id}", "{apiId}")))
     assert spec_routes == app_routes
 
 

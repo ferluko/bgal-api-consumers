@@ -77,6 +77,15 @@ class Settings(BaseSettings):
 
     # --- Integraciones -----------------------------------------------------
     threescale_mode: Literal["disabled", "stub"] = "disabled"
+    # Applications de 3scale de las suscripciones (0.3.0, excepción a D3 del 29/10). Admins permitidos: JSON
+    # [{match (regex del nombre completo del cluster), adminUrl ({t} = tenant, {cluster})}]; los pasa toolkit-up.sh
+    # desde el chart del API Subscriber (repo privado: acá no van hosts internos). Vacío = 501.
+    threescale_admins: str = ""
+    threescale_tokens: str = ""  # Secret: JSON {"<cluster>/<tenant>": access_token} (scope account_management)
+    threescale_account_email: str = ""  # template ({sigla}) para crear la cuenta de la sigla; vacío = no la crea
+    threescale_verify: bool = True
+    threescale_ca_file: str = ""  # bundle de CA para los admins (en OpenShift, el trusted-ca-bundle inyectado)
+    threescale_timeout_s: float = 30
     callback_secret: str = ""
     callback_retries: int = 3
     callback_timeout_s: float = 5
@@ -96,6 +105,7 @@ class Settings(BaseSettings):
         "subscriber_token",
         "callback_secret",
         "api_tokens",
+        "threescale_tokens",
         mode="after",
     )
     @classmethod

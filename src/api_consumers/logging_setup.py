@@ -38,6 +38,7 @@ def setup_logging(level: str = "INFO") -> None:
     root = logging.getLogger()
     root.handlers[:] = [handler]
     root.setLevel(level.upper())
-    # hvac/urllib3 pueden loguear URLs y headers en DEBUG
-    for noisy in ("urllib3", "hvac", "kubernetes"):
+    # hvac/urllib3 pueden loguear URLs y headers en DEBUG; httpx loguea cada URL en INFO, y el admin API de 3scale lleva
+    # el access_token en la query y la app_key en el path de keys (0.3.0)
+    for noisy in ("urllib3", "hvac", "kubernetes", "httpx", "httpcore"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
