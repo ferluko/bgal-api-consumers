@@ -8,6 +8,7 @@
 # el índice de unicidad. Corre en el pod de la API Consumers, con su configuración y su acceso a Vault
 # (adopt_credential.py por stdin). No lee datos (D3): el app_id lo informa quien puede verlo (DevSecOps, o el dueño
 # desde su Secret secret-apim-<tenant>). Muestra el plan y pide confirmación antes de escribir.
+# Desde 0.4.0 es lo mismo que POST|PATCH /v1/consumers/{ns}/adoption de la API (y necesita esa imagen en el pod).
 #
 #   deploy/scripts/adopt-credential.sh adopt      <ns> <ambiente> <tenant> <app_id>
 #   deploy/scripts/adopt-credential.sh fix-app-id <ns> <ambiente> <tenant> <app_id_actual> <app_id_correcto>
@@ -15,8 +16,11 @@
 # Variables:
 #   NS                namespace de la API Consumers (default: donde esté el Deployment api-consumers)
 #   SIGLA OWNER REF   adopt: sigla (default: prefijo del namespace), dueño y ticket, para la metadata
+#   PLATFORM          dónde está la credencial: openshift (default) o eks
+#   EKS_CLUSTER       con eks, el nombre del cluster de EKS (eks-<cluster>/<ns>/secret-apim-<tenant>-v2)
 #   DRY_RUN=1         solo el plan · YES=1 sin confirmación
-#   SKIP_INDEX=1      no reserva el app_id en el índice (solo para reintentar una corrida propia que ya lo reservó)
+#   SKIP_INDEX=1      no reserva el app_id en el índice (una reserva anterior a 0.4.0 de esta misma credencial; la de
+#                     la otra copia de un namespace migrado a EKS se comparte sola)
 #   RELEASE_OLD=1     fix-app-id: borra la reserva del app_id viejo si la hizo la adopción (force: aunque no conste).
 #                     Requiere delete en el índice: la policy de la API Consumers no lo tiene (pedírselo a DevSecOps)
 #
@@ -41,7 +45,8 @@ echo "--    API Consumers en $NS ($(oc whoami --show-server))"
 
 run() { # run plan|apply <args> → adopt_credential.py en el pod (las opciones no son secretas)
   oc -n "$NS" exec -i deploy/api-consumers -- env SIGLA="${SIGLA:-}" OWNER="${OWNER:-}" REF="${REF:-}" \
-    SKIP_INDEX="${SKIP_INDEX:-}" RELEASE_OLD="${RELEASE_OLD:-}" python3 - "$@" < "$DIR/adopt_credential.py"
+    PLATFORM="${PLATFORM:-}" EKS_CLUSTER="${EKS_CLUSTER:-}" SKIP_INDEX="${SKIP_INDEX:-}" RELEASE_OLD="${RELEASE_OLD:-}" \
+    python3 - "$@" < "$DIR/adopt_credential.py"
 }
 
 run plan "$@" || exit $?

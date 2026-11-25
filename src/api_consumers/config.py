@@ -11,9 +11,12 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SECRETS_DIR = "/etc/api-consumers/secrets"
-# environment (como lo informa ServiceNow o el alta del namespace) → ambiente de Vault (openshift-<ambiente>)
-VAULT_ENVS = {"dev": "dev", "int": "int", "qa": "qas", "qas": "qas", "prd": "prd"}
+# environment (como lo informa ServiceNow o el alta del namespace) → ambiente de Vault (openshift-<ambiente>). STG es
+# INT (0.4.0: los namespaces -int de arqc-epsilon-136)
+VAULT_ENVS = {"dev": "dev", "int": "int", "stg": "int", "qa": "qas", "qas": "qas", "prd": "prd"}
 TENANTS = ("b2b", "b2c")
+# Dónde corre el namespace consumidor (0.4.0, 25/11): define el path de la credencial en Vault
+PLATFORMS = ("openshift", "eks")
 
 
 class Settings(BaseSettings):
@@ -48,6 +51,9 @@ class Settings(BaseSettings):
     # openshift-{env}/{namespace}/data/secret-apim-{tenant}-v2 (namespace de Vault openshift-<ambiente> con un KV por
     # namespace de OpenShift; vault.split_mount).
     credential_path_template: str = "openshift-{env}/{namespace}/secret-apim-{tenant}-v2"
+    # EKS (0.4.0, 25/11): un namespace de Vault por cluster (admin/eks-<cluster>) con un KV por namespace; el ambiente
+    # no está en el path. Con APICON_VAULT_NAMESPACE=admin, el prefijo eks-<cluster> resuelve ese namespace de Vault.
+    eks_credential_path_template: str = "eks-{cluster}/{namespace}/data/secret-apim-{tenant}-v2"
     app_id_field: str = "app_id_{tenant}"
     app_key_field: str = "app_key_{tenant}"
     vault_envs: dict[str, str] = Field(default_factory=lambda: dict(VAULT_ENVS))

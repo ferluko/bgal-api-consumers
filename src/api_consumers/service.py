@@ -2,7 +2,8 @@
 
 - Dueña de la credencial del consumidor: alta, baja y rotación en Vault. Una credencial por namespace y tenant, con la
   convención de DevSecOps: `openshift-<ambiente>/<ns>/secret-apim-<tenant>-v2`, claves `app_id_<tenant>` y
-  `app_key_<tenant>` (06/10 y 07/10).
+  `app_key_<tenant>` (06/10 y 07/10); en EKS, `eks-<eksCluster>/<ns>/secret-apim-<tenant>-v2` (0.4.0, 25/11).
+- Onboarding de credenciales preexistentes (adopción, `adoption.py`): lo que hacía `adopt-credential.sh`.
 - **Escribe sin leer keys:** solo genera la key, la escribe con check-and-set y la olvida. El `app_id` y todo el estado
   (consumidor y rotación) viven en la `custom_metadata` del secreto. Sin base de datos.
 - **Rotación coordinada con el API Subscriber:** (1) fija la versión N vigente; (2) el Subscriber abre la ventana
@@ -15,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import threading
 import time
 import uuid
@@ -25,8 +27,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from . import render
-from .config import TENANTS, Settings
+from . import adoption, render
+from .config import PLATFORMS, TENANTS, Settings
 from .errors import Problem, conflict, not_found, not_implemented, unprocessable
 from .integrations import ThreeScale, deliver_callback
 from .subscriber import Subscriber
@@ -74,9 +76,13 @@ def _drop_none(d: dict) -> dict:
     return {k: v for k, v in d.items() if v is not None}
 
 
+CLUSTER = re.compile(r"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$")
+
+
 @dataclass(frozen=True)
 class Cred:
-    """Una credencial: namespace × ambiente × tenant. `path` es el path completo en Vault (con el mount)."""
+    """Una credencial: namespace × ambiente × tenant, en OpenShift o en un cluster de EKS (0.4.0). `path` es el path
+    completo en Vault (con el mount)."""
 
     namespace: str
     environment: str  # como lo informa el pedido (QA, PRD…)
@@ -84,10 +90,62 @@ class Cred:
     path: str
     app_id_field: str
     app_key_field: str
+    platform: str = "openshift"
+    cluster: str = ""  # solo eks
 
     @property
     def label(self) -> str:
-        return f"{self.namespace} ({self.environment}, {self.tenant})"
+        where = f", eks {self.cluster}" if self.platform == "eks" else ""
+        return f"{self.namespace} ({self.environment}, {self.tenant}{where})"
+
+    @property
+    def query(self) -> dict[str, str]:
+        """La query que identifica el recurso (environment, tenant y, en EKS, platform y eksCluster)."""
+        q = {"environment": self.environment, "tenant": self.tenant}
+        return {**q, "platform": "eks", "eksCluster": self.cluster} if self.platform == "eks" else q
+
+
+def make_cred(
+    s: Settings,
+    namespace: str,
+    environment: str | None,
+    tenant: str | None,
+    platform: str | None = None,
+    cluster: str | None = None,
+) -> Cred:
+    """La credencial de un namespace para un ambiente y tenant, en OpenShift (default) o en un cluster de EKS. 422 si
+    el tenant, el ambiente, la plataforma o el cluster no son válidos. El cluster de EKS no se valida contra una lista
+    (decisión del 25/11): uno que no existe falla al escribir en Vault."""
+    tenant = (tenant or "").strip().lower()
+    if tenant not in TENANTS:
+        raise unprocessable(f"tenant {tenant or 'ausente'}: tiene que ser b2b o b2c")
+    env = s.vault_env(environment)
+    if not env:
+        raise unprocessable(f"ambiente {environment or 'ausente'} sin path de Vault (APICON_VAULT_ENVS)")
+    platform = (platform or "openshift").strip().lower()
+    cluster = (cluster or "").strip().lower()
+    if platform not in PLATFORMS:
+        raise unprocessable(f"platform {platform}: tiene que ser {' o '.join(PLATFORMS)}")
+    if platform == "eks":
+        if not cluster:
+            raise unprocessable("platform eks: falta eksCluster (el nombre del cluster de EKS, p. ej. arqc-delta-136)")
+        if not CLUSTER.match(cluster):
+            raise unprocessable(f"eksCluster {cluster!r}: no es un nombre DNS válido")
+        tpl = s.eks_credential_path_template
+    else:
+        if cluster:
+            raise unprocessable("eksCluster solo va con platform eks")
+        tpl = s.credential_path_template
+    return Cred(
+        namespace=namespace,
+        environment=(environment or "").strip(),
+        tenant=tenant,
+        path=tpl.format(env=env, namespace=namespace, tenant=tenant, cluster=cluster),
+        app_id_field=s.app_id_field.format(tenant=tenant),
+        app_key_field=s.app_key_field.format(tenant=tenant),
+        platform=platform,
+        cluster=cluster,
+    )
 
 
 class Runner:
@@ -133,22 +191,16 @@ class Service:
         self._driving: set[str] = set()
 
     # ================================================================ helpers
-    def cred(self, namespace: str, environment: str | None, tenant: str | None) -> Cred:
-        """La credencial de un namespace para un ambiente y tenant. 422 si el tenant o el ambiente no son válidos."""
-        tenant = (tenant or "").strip().lower()
-        if tenant not in TENANTS:
-            raise unprocessable(f"tenant {tenant or 'ausente'}: tiene que ser b2b o b2c")
-        env = self.s.vault_env(environment)
-        if not env:
-            raise unprocessable(f"ambiente {environment or 'ausente'} sin path de Vault (APICON_VAULT_ENVS)")
-        return Cred(
-            namespace=namespace,
-            environment=(environment or "").strip(),
-            tenant=tenant,
-            path=self.s.credential_path_template.format(env=env, namespace=namespace, tenant=tenant),
-            app_id_field=self.s.app_id_field.format(tenant=tenant),
-            app_key_field=self.s.app_key_field.format(tenant=tenant),
-        )
+    def cred(
+        self,
+        namespace: str,
+        environment: str | None,
+        tenant: str | None,
+        platform: str | None = None,
+        cluster: str | None = None,
+    ) -> Cred:
+        """La credencial de un namespace para un ambiente y tenant (y plataforma). 422 si algo no es válido."""
+        return make_cred(self.s, namespace, environment, tenant, platform, cluster)
 
     def _lock(self, c: Cred) -> threading.RLock:
         with self._guard:
@@ -157,13 +209,11 @@ class Service:
     def _meta(self, c: Cred) -> dict | None:
         return self.vault.metadata(c.path)
 
-    def _index(self, kind: str, value: str, ns: str) -> bool:
-        """Unicidad atómica: crea `<mount>/<index_prefix>/<kind>/<value>` con cas=0. False si ya existía."""
-        try:
-            self.vault.write(f"{self.s.index_root}/{kind}/{value}", {"namespace": ns, "created_at": now()}, cas=0)
-            return True
-        except CasMismatch:
-            return False
+    def _index(self, kind: str, value: str, ns: str, tenant: str | None = None) -> bool:
+        """Unicidad atómica: crea `<mount>/<index_prefix>/<kind>/<value>` con cas=0. False si ya existía. Con `tenant`
+        (app-ids, 0.4.0), quién lo reservó queda en la metadata: la adopción de la otra copia de un namespace migrado
+        a EKS lo compara (adoption.reservation)."""
+        return adoption.reserve(self.vault, f"{self.s.index_root}/{kind}/{value}", ns, tenant)
 
     def _register_rotation(self, c: Cred) -> None:
         """Registro para retomar rotaciones al arrancar (`recover`) sin recorrer todos los namespaces: una entrada por
@@ -174,7 +224,15 @@ class Service:
         except CasMismatch:
             pass
         self.vault.set_metadata(
-            entry, {"namespace": c.namespace, "environment": c.environment, "tenant": c.tenant, "path": c.path}
+            entry,
+            {
+                "namespace": c.namespace,
+                "environment": c.environment,
+                "tenant": c.tenant,
+                "platform": c.platform,
+                "eks_cluster": c.cluster,
+                "path": c.path,
+            },
         )
 
     # ================================================================== views
@@ -190,6 +248,8 @@ class Service:
                 "namespace": cr.namespace,
                 "environment": cr.environment,
                 "tenant": cr.tenant,
+                "platform": cr.platform,
+                "eksCluster": cr.cluster or None,
                 "sigla": c.get("sigla"),
                 "tier": c.get("tier"),
                 "owner": c.get("owner"),
@@ -246,8 +306,9 @@ class Service:
     # ============================================================= consumidor
     def create_consumer(self, req: dict, idem_key: str) -> tuple[int, dict]:
         ns = req["namespace"]
-        cr = self.cred(ns, req.get("environment"), req.get("tenant"))
-        h = _hash(req)
+        cr = self.cred(ns, req.get("environment"), req.get("tenant"), req.get("platform"), req.get("eksCluster"))
+        # platform omitido = openshift: el mismo hash, así el reintento de quien no la manda sigue dando 200
+        h = _hash({k: v for k, v in req.items() if not (k == "platform" and v == "openshift")})
         ts = req.get("threescale") or {}
         if ts.get("syncCredentials") and self.s.threescale_mode == "disabled":
             raise not_implemented("sincronización con 3scale no habilitada (APICON_THREESCALE_MODE)")
@@ -269,14 +330,14 @@ class Service:
             imp = req.get("importFrom3scale")
             if imp:
                 app_id, app_key = self.threescale.get_credentials(imp.get("tenant", ""), imp.get("applicationId", ""))
-                if not self._index("app-ids", app_id, ns):
+                if not self._index("app-ids", app_id, ns, cr.tenant):
                     raise conflict(f"el App ID importado {app_id} ya está en uso por otro consumidor")
                 if not self._index("key-fp", fingerprint(app_key), ns):
                     raise conflict("la credencial importada colisiona con la de otro consumidor (H-03)")
             else:
                 for _ in range(10):
                     app_id = generate_app_id()
-                    if self._index("app-ids", app_id, ns):
+                    if self._index("app-ids", app_id, ns, cr.tenant):
                         break
                 else:  # pragma: no cover - 2^32 ids
                     raise Problem(503, "Unavailable", "no se pudo reservar un App ID")
@@ -306,6 +367,8 @@ class Service:
                     "namespace": ns,
                     "environment": cr.environment,
                     "tenant": cr.tenant,
+                    "platform": cr.platform,
+                    "eks_cluster": cr.cluster,
                     "sigla": req["sigla"],
                     "tier": req["tier"],
                     "owner": req.get("owner"),
@@ -329,6 +392,48 @@ class Service:
         if not md:
             raise not_found(f"consumidor {cr.label}")
         return self.consumer_view(cr, md)
+
+    # ================================================= adopción (0.4.0, 25/11)
+    def adopt(self, cr: Cred, req: dict, idem_key: str, dry_run: bool = False) -> tuple[int, dict]:
+        """Onboarding de una credencial preexistente (`Unmanaged`): escribe su metadata con el app_id informado y lo
+        reserva en el índice, sin leer ni tocar los datos (D3). Es `adopt-credential.sh adopt` por la API."""
+        h = _hash({"path": cr.path, **req})
+        opts = {
+            "SIGLA": req.get("sigla", ""),
+            "OWNER": req.get("owner", ""),
+            "REF": req.get("servicenowRef", ""),
+            "SKIP_INDEX": "1" if req.get("skipIndex") else "",
+            "ADOPTED_BY": "api-consumers",
+        }
+        with self._lock(cr):
+            md = self._meta(cr)
+            c = (md or {}).get("custom") or {}
+            if md and c.get("adoption_idempotency_key") == idem_key:
+                if c.get("adoption_request_hash") != h:
+                    raise unprocessable("Idempotency-Key reutilizada con un payload distinto")
+                return 200, self.consumer_view(cr, md)
+            p = adoption.build_plan("adopt", cr, [req["appId"]], opts, self.s, self.vault, self.subscriber)
+            if dry_run:
+                return 200, adoption.plan_view(p)
+            p.metadata.update({"adoption_idempotency_key": idem_key, "adoption_request_hash": h})
+            out = adoption.apply(p, self.vault)
+            return 201, {**self.consumer_view(cr, self._meta(cr)), "notes": adoption.notes(p, out)}
+
+    def fix_app_id(self, cr: Cred, req: dict, dry_run: bool = False) -> dict:
+        """Corrige el app_id de una adopción (`adopt-credential.sh fix-app-id`): se niega con suscripciones vivas,
+        porque su label app-id es el viejo. Idempotente por estado."""
+        with self._lock(cr):
+            md = self._meta(cr)
+            c = (md or {}).get("custom") or {}
+            new, old = req["appId"], req["previousAppId"]
+            if md and c.get("origin") == "adopted" and c.get("app_id") == new and c.get("app_id_corrected_from") == old:
+                return self.consumer_view(cr, md)  # reintento de una corrección hecha
+            opts = {"RELEASE_OLD": "1" if req.get("releasePrevious") else ""}
+            p = adoption.build_plan("fix-app-id", cr, [old, new], opts, self.s, self.vault, self.subscriber)
+            if dry_run:
+                return adoption.plan_view(p)
+            out = adoption.apply(p, self.vault)
+            return {**self.consumer_view(cr, self._meta(cr)), "notes": adoption.notes(p, out)}
 
     # ======================================================= 3scale (0.3.0)
     def _custom(self, cr: Cred, write: bool = False) -> dict:
@@ -636,7 +741,13 @@ class Service:
                 continue
             ident = (self.vault.metadata(f"{root}/{entry}") or {}).get("custom") or {}
             try:
-                cr = self.cred(ident.get("namespace", ""), ident.get("environment"), ident.get("tenant"))
+                cr = self.cred(
+                    ident.get("namespace", ""),
+                    ident.get("environment"),
+                    ident.get("tenant"),
+                    ident.get("platform"),
+                    ident.get("eks_cluster"),
+                )
             except Problem:
                 continue
             md = self._meta(cr)

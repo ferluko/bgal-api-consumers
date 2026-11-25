@@ -7,7 +7,9 @@ from pathlib import Path
 
 import pytest
 import yaml
-from conftest import ENV, ID, INDEX, KEY, NS, QS, TENANT, onboard
+from conftest import EKS, ENV, ID, INDEX, KEY, NS, QS, TENANT, onboard
+
+from api_consumers import adoption
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "deploy/scripts/adopt_credential.py"
@@ -132,13 +134,28 @@ def test_sin_permiso_para_borrar_la_reserva_avisa_y_la_correccion_queda(parts, s
     def forbidden(vault, path):
         raise PermissionError(path)
 
-    monkeypatch.setattr(ad, "_release", forbidden)
+    monkeypatch.setattr(adoption, "_release", forbidden)  # desde 0.4.0, la lógica está en api_consumers.adoption
     _, out = run(parts, settings, "fix-app-id", WRONG, REAL, RELEASE_OLD="1")
     assert parts["vault"].meta[PATH]["app_id"] == REAL
     assert any(line.startswith("WARN") and "DevSecOps" in line for line in out)
 
 
+def test_adopt_en_eks_con_platform_y_eks_cluster(parts, settings):
+    """0.4.0: la credencial de un namespace de EKS está en eks-<cluster>/<ns>/…; el script la ubica con PLATFORM y
+    EKS_CLUSTER, como la query del endpoint."""
+    eks = f"eks-{EKS}/{PRE}/data/secret-apim-{TENANT}-v2"
+    for v in range(2):
+        parts["vault"].write(eks, {ID: REAL, KEY: f"k{v}"}, cas=v)
+    with pytest.raises(ad.Refused, match="no existe"):  # sin PLATFORM busca en openshift
+        run(parts, settings, "adopt", REAL)
+    with pytest.raises(ad.Refused, match="falta eksCluster"):
+        run(parts, settings, "adopt", REAL, PLATFORM="eks")
+    run(parts, settings, "adopt", REAL, PLATFORM="eks", EKS_CLUSTER=EKS, OWNER="DevOps")
+    meta = parts["vault"].meta[eks]
+    assert (meta["platform"], meta["eks_cluster"], meta["adopted_by"]) == ("eks", EKS, "adopt-credential")
+
+
 def test_no_lee_datos_y_uso():
-    src = SCRIPT.read_text()
-    assert "read_secret" not in src, "D3: el script no lee datos de Vault"
+    for src in (SCRIPT.read_text(), (ROOT / "src/api_consumers/adoption.py").read_text()):
+        assert "read_secret" not in src, "D3: la adopción no lee datos de Vault"
     assert ad.main([]) == 2

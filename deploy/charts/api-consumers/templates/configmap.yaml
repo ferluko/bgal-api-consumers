@@ -22,6 +22,7 @@ data:
   APICON_VAULT_VERIFY: {{ $a.vault.verify | quote }}
   APICON_INDEX_PREFIX: {{ $a.vault.indexPrefix | quote }}
   APICON_CREDENTIAL_PATH_TEMPLATE: {{ $a.vault.credentialPathTemplate | quote }}
+  APICON_EKS_CREDENTIAL_PATH_TEMPLATE: {{ $a.vault.eksCredentialPathTemplate | quote }}
   APICON_VAULT_ENVS: {{ toJson $a.vault.envs | quote }}
   APICON_SUBSCRIBER_MODE: "http"
   APICON_SUBSCRIBER_VERIFY: {{ $a.subscriber.verify | quote }}

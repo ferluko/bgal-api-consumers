@@ -1,13 +1,15 @@
 openapi: 3.0.3
 info:
   title: API Consumers
-  version: 0.3.0-draft
+  version: 0.4.0-draft
   description: |
     Identidad del consumidor: una credencial (App ID / App Key) por namespace **y tenant**, su alta, baja y rotación.
     Es el **único** servicio que escribe credenciales en Vault, con la convención de DevSecOps (06/10 y 07/10):
     `openshift-<ambiente>/<namespace>/secret-apim-<tenant>-v2` (KV v2; el primer segmento es el mount), con las
     claves `app_id_<tenant>` y `app_key_<tenant>`. El ambiente sale del `environment` del pedido (QA → `qas`).
-    Cada recurso de un consumidor se identifica por namespace + `environment` + `tenant` (query).
+    En EKS (0.4.0), `eks-<eksCluster>/<namespace>/secret-apim-<tenant>-v2`.
+    Cada recurso de un consumidor se identifica por namespace + `environment` + `tenant` (query) y, en EKS, también
+    `platform=eks` + `eksCluster`.
     No escribe en Git ni en los clusters. Spec: ../README.md · ADR-api-consumers-y-subscriber-sin-estado.md
     (D1, D3, D4, D5) · ADR-gitops-apis-y-boveda.md §6.
 
@@ -41,6 +43,25 @@ info:
     escribiría un `app_id` vacío y le rompería la credencial al consumidor, así que esas operaciones dan 409 hasta que
     se adopte.
 
+    **Cambios 0.4.0 (25/11):**
+    - **Plataforma del consumidor.** El alta recibe `platform` (`openshift`, default, o `eks`) y, con `eks`,
+      `eksCluster`, el nombre del cluster de EKS (`arqc-delta-136`, `arqc-epsilon-136`, `apps-qa-use1-01`,
+      `apps-prd-use1-01`…; no se valida contra una lista). En EKS cada cluster tiene su namespace de Vault
+      (`admin/eks-<cluster>`) con un KV por namespace, y el ambiente no va en el path:
+      `eks-<eksCluster>/<namespace>/data/secret-apim-<tenant>-v2` (`APICON_EKS_CREDENTIAL_PATH_TEMPLATE`). Los
+      recursos de un consumidor de EKS llevan `platform=eks&eksCluster=<cluster>` en la query; sin `platform`, son
+      los de OpenShift (lo que pide el API Subscriber). La credencial de OpenShift y la de EKS del mismo namespace,
+      ambiente y tenant son dos (un namespace migrado tiene una en cada path). `STG` es `int`. La policy de la API
+      Consumers suma lo mismo sobre `eks-<cluster>/…` en cada namespace de Vault de EKS (pedido a DevSecOps).
+    - **Onboarding de credenciales preexistentes (adopción).** `POST /v1/consumers/{namespace}/adoption`: el pipeline
+      de DevSecOps crea la credencial en Vault (hoy con el App ID y el App Key de 3scale) y llama acá con el App ID;
+      la API Consumers escribe su metadata (`origin: adopted`) y reserva el App ID en el índice, sin leer ni tocar
+      los datos. `PATCH` corrige el App ID de una adopción. `dryRun=true` muestra lo que haría sin escribir. Es lo
+      que hacía `deploy/scripts/adopt-credential.sh`, que sigue como envoltorio.
+    - **Dueño de la reserva del App ID.** `index/app-ids/<app_id>` guarda en su metadata el namespace y el tenant
+      que lo reservaron: la adopción de la otra copia de un namespace migrado (el mismo App ID en otro path) la
+      comparte; una de otro consumidor da 409.
+
     **3scale (0.3.0, 29/10):** el API Subscriber 0.11.0 decide en qué clusters de 3scale se suscribe un consumidor
     (legacy apps0: solo 3scale; multicluster appsN: 3scale y Kuadrant) y pide acá la application: una por servicio
     (API) en la cuenta de la sigla, con el app_id y la app_key de la credencial, en el admin de 3scale de ese cluster
@@ -53,6 +74,7 @@ security:
   - oidc: []
 tags:
   - name: consumers
+  - name: adoption
   - name: rotations
   - name: threescale
 paths:
@@ -99,6 +121,8 @@ paths:
       - $ref: '#/components/parameters/Namespace'
       - $ref: '#/components/parameters/Environment'
       - $ref: '#/components/parameters/Tenant'
+      - $ref: '#/components/parameters/Platform'
+      - $ref: '#/components/parameters/EksCluster'
     get:
       tags: [consumers]
       summary: Referencia de la credencial (App ID, path y versión en Vault, estado). Nunca el App Key. La usa el API Subscriber para el label app-id.
@@ -137,6 +161,8 @@ paths:
       - $ref: '#/components/parameters/Namespace'
       - $ref: '#/components/parameters/Environment'
       - $ref: '#/components/parameters/Tenant'
+      - $ref: '#/components/parameters/Platform'
+      - $ref: '#/components/parameters/EksCluster'
     get:
       tags: [consumers]
       summary: ExternalSecret secret-apim renderizado (mismo que devuelve el alta). Para reintentos del flujo de onboarding.
@@ -148,11 +174,108 @@ paths:
             application/yaml:
               schema: { type: string }
         '404': { $ref: '#/components/responses/NotFound' }
+  /v1/consumers/{namespace}/adoption:
+    parameters:
+      - $ref: '#/components/parameters/Namespace'
+      - $ref: '#/components/parameters/Environment'
+      - $ref: '#/components/parameters/Tenant'
+      - $ref: '#/components/parameters/Platform'
+      - $ref: '#/components/parameters/EksCluster'
+      - $ref: '#/components/parameters/DryRun'
+    post:
+      tags: [adoption]
+      summary: Onboarding de una credencial preexistente (Unmanaged) con el App ID que informa su dueño o DevSecOps.
+      description: |
+        La credencial ya está en Vault (la creó el pipeline de DevSecOps, hoy con el App ID y el App Key de 3scale) y
+        la API Consumers no la administra (`state: Unmanaged`). Escribe la `custom_metadata` (`app_id`, `origin:
+        adopted`, sigla, owner, plataforma) y reserva el App ID en el índice (`cas=0`). **No lee ni toca los datos**
+        (D3): no hay versión nueva y la key nunca pasa por acá. Adoptada, se puede suscribir, rotar y dar de baja.
+        Si el App ID ya lo reservó el mismo namespace y tenant (la otra copia de un namespace migrado de OpenShift a
+        EKS), se comparte la reserva. Misma `Idempotency-Key` y mismo payload = 200; con otro payload = 422.
+        Con `dryRun=true` devuelve el plan sin escribir.
+      operationId: adoptConsumer
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdoptionRequest' }
+      responses:
+        '201':
+          description: Adoptada (`notes` con los avisos, p. ej. un App ID que no tiene el formato de 8 hex).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Consumer' }
+        '200':
+          description: Reintento idempotente de una adopción hecha, o el plan de un `dryRun`.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Consumer'
+                  - $ref: '#/components/schemas/AdoptionPlan'
+        '404':
+          description: No hay credencial en el path de ese namespace, ambiente, tenant y plataforma.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '409':
+          description: La credencial ya la administra la API Consumers (generada, importada o adoptada), o el App ID está reservado por otro consumidor o por una reserva anterior a 0.4.0 (si es de esta misma credencial, `skipIndex`).
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422':
+          description: App ID que no sirve como label, tenant, ambiente o plataforma inválidos, o la misma Idempotency-Key con otro payload.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503': { $ref: '#/components/responses/DependencyUnavailable' }
+    patch:
+      tags: [adoption]
+      summary: Corrige el App ID de una adopción (el informado estaba mal). Idempotente por estado.
+      description: |
+        Solo para credenciales adoptadas (`origin: adopted`): el App ID de una generada o importada está en los datos y
+        no se corrige en la metadata. Se niega con una rotación en curso o con suscripciones vivas del namespace y
+        tenant (su label `app-id` es el viejo: darlas de baja antes). Reserva el App ID correcto; con
+        `releasePrevious`, borra la reserva del viejo si la hizo la adopción (la policy de la API Consumers no tiene
+        delete: si Vault no lo deja, queda en `notes` y la corrección se hace igual).
+      operationId: fixAdoptionAppId
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AppIdFix' }
+      responses:
+        '200':
+          description: Corregida (o ya lo estaba), o el plan de un `dryRun`.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Consumer'
+                  - $ref: '#/components/schemas/AdoptionPlan'
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: No es una adopción, el App ID actual no es `previousAppId`, rotación en curso, suscripciones vivas, App ID correcto reservado por otro, o `releasePrevious` sin constancia de que la reserva vieja la hizo esta adopción.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422':
+          description: App IDs iguales o que no sirven como label.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503': { $ref: '#/components/responses/DependencyUnavailable' }
   /v1/consumers/{namespace}/rotations:
     parameters:
       - $ref: '#/components/parameters/Namespace'
       - $ref: '#/components/parameters/Environment'
       - $ref: '#/components/parameters/Tenant'
+      - $ref: '#/components/parameters/Platform'
+      - $ref: '#/components/parameters/EksCluster'
     post:
       tags: [rotations]
       summary: Inicia una rotación coordinada con el API Subscriber (pasos 1 a 3 de D4) y la deja en AwaitingConsumer.
@@ -204,6 +327,8 @@ paths:
       - $ref: '#/components/parameters/Namespace'
       - $ref: '#/components/parameters/Environment'
       - $ref: '#/components/parameters/Tenant'
+      - $ref: '#/components/parameters/Platform'
+      - $ref: '#/components/parameters/EksCluster'
       - name: rotationId
         in: path
         required: true
@@ -252,6 +377,8 @@ paths:
       - $ref: '#/components/parameters/Namespace'
       - $ref: '#/components/parameters/Environment'
       - $ref: '#/components/parameters/Tenant'
+      - $ref: '#/components/parameters/Platform'
+      - $ref: '#/components/parameters/EksCluster'
       - name: cluster
         in: path
         required: true
@@ -366,6 +493,24 @@ components:
       in: query
       required: true
       schema: { $ref: '#/components/schemas/Tenant' }
+    Platform:
+      name: platform
+      in: query
+      required: false
+      description: Dónde corre el namespace consumidor (0.4.0). Sin él, openshift.
+      schema: { $ref: '#/components/schemas/Platform' }
+    EksCluster:
+      name: eksCluster
+      in: query
+      required: false
+      description: Con platform=eks, el cluster de EKS (eks-<eksCluster>/<namespace>/…). Obligatorio ahí; con openshift, 422.
+      schema: { $ref: '#/components/schemas/EksCluster' }
+    DryRun:
+      name: dryRun
+      in: query
+      required: false
+      description: Valida y devuelve lo que haría, sin escribir.
+      schema: { type: boolean, default: false }
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -395,6 +540,14 @@ components:
     Tenant:
       type: string
       enum: [b2b, b2c]
+    Platform:
+      type: string
+      enum: [openshift, eks]
+      default: openshift
+    EksCluster:
+      type: string
+      pattern: '^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$'
+      example: arqc-delta-136
     SyncState:
       type: string
       enum: [NotApplicable, Pending, InSync, Failed]
@@ -405,8 +558,12 @@ components:
         namespace: { $ref: '#/components/schemas/Namespace' }
         sigla: { type: string }
         tier: { type: string, enum: [nonprd, prd] }
-        environment: { type: string, example: QA, description: 'Ambiente del namespace (QA → openshift-qas).' }
+        environment: { type: string, example: QA, description: 'Ambiente del namespace (QA → openshift-qas; STG → int).' }
         tenant: { $ref: '#/components/schemas/Tenant' }
+        platform: { $ref: '#/components/schemas/Platform' }
+        eksCluster:
+          allOf: [{ $ref: '#/components/schemas/EksCluster' }]
+          description: 'Solo con platform eks, y obligatorio ahí: el path es eks-<eksCluster>/<namespace>/secret-apim-<tenant>-v2.'
         owner: { type: string }
         servicenowRef: { type: string }
         importFrom3scale:
@@ -431,7 +588,9 @@ components:
         owner: { type: string }
         environment: { type: string }
         tenant: { $ref: '#/components/schemas/Tenant' }
-        appId: { type: string, pattern: '^[a-f0-9]{8}$' }
+        platform: { $ref: '#/components/schemas/Platform' }
+        eksCluster: { $ref: '#/components/schemas/EksCluster' }
+        appId: { type: string, description: 'App ID (8 hex si lo generó la API Consumers o 3scale).' }
         vaultPath: { type: string, example: openshift-qas/sigla-x-qas/secret-apim-b2c-v2 }
         vaultProperty: { type: string, example: app_key_b2c, description: 'Clave del App Key dentro del secreto (nunca el valor).' }
         vaultVersion: { type: integer, description: Versión vigente de la key en KV v2 (current_version). }
@@ -439,7 +598,7 @@ components:
           type: string
           enum: [Active, Rotating, Revoked, Unmanaged]
           description: Unmanaged = credencial preexistente en Vault que no creó ni importó la API Consumers (sin su metadata); no se puede rotar ni dar de baja hasta adoptarla.
-        origin: { type: string, enum: [generated, 3scale-import] }
+        origin: { type: string, enum: [generated, 3scale-import, adopted] }
         createdAt: { type: string, format: date-time }
         rotatedAt: { type: string, format: date-time }
         rotationId: { type: string, description: 'Rotación en curso, si la hay.' }
@@ -448,6 +607,39 @@ components:
           properties:
             threescale: { $ref: '#/components/schemas/SyncState' }
         secretApimManifest: { type: string, description: ExternalSecret secret-apim-<tenant> renderizado (solo en la respuesta del alta). }
+        notes:
+          type: array
+          items: { type: string }
+          description: Avisos de una adopción o de la corrección de su App ID (solo en esas respuestas).
+    AdoptionRequest:
+      type: object
+      required: [appId]
+      properties:
+        appId: { type: string, maxLength: 63, description: 'El App ID que está en los datos de la credencial (lo informa DevSecOps o el dueño). Es el label app-id de las suscripciones.' }
+        sigla: { type: string, description: 'Default: el prefijo del namespace, en mayúsculas.' }
+        owner: { type: string }
+        servicenowRef: { type: string }
+        skipIndex: { type: boolean, default: false, description: 'No reserva el App ID: solo para una reserva anterior a 0.4.0 de esta misma credencial.' }
+    AppIdFix:
+      type: object
+      required: [appId, previousAppId]
+      properties:
+        appId: { type: string, maxLength: 63, description: El App ID correcto. }
+        previousAppId: { type: string, maxLength: 63, description: El que quedó en la adopción. }
+        releasePrevious: { type: boolean, default: false, description: Borra la reserva del App ID viejo si la hizo la adopción. }
+    AdoptionPlan:
+      type: object
+      description: Lo que haría una adopción o una corrección (dryRun=true); no se escribió nada.
+      properties:
+        dryRun: { type: boolean, enum: [true] }
+        mode: { type: string, enum: [adopt, fix-app-id] }
+        vaultPath: { type: string }
+        vaultVersion: { type: integer, description: Versión vigente (la adopción no escribe datos). }
+        changes: { type: object, additionalProperties: { type: string }, description: Claves de la custom_metadata que cambiarían. }
+        index: { type: string, enum: [reserved, shared, skipped], description: 'reserved: reserva el App ID; shared: ya lo reservó este namespace y tenant (otra copia); skipped: skipIndex.' }
+        reserve: { type: string, description: Entrada del índice que se crearía. }
+        release: { type: string, description: Entrada del índice que se borraría (releasePrevious). }
+        notes: { type: array, items: { type: string } }
     ThreeScaleApplication:
       type: object
       properties:

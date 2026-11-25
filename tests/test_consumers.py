@@ -1,7 +1,7 @@
 import re
 
 import yaml
-from conftest import ID, INDEX, KEY, NS, PATH, QS, TENANT, Q, idem, onboard
+from conftest import EKS, EKS_PATH, ID, INDEX, KEY, NS, PATH, QS, QSE, TENANT, Q, idem, onboard
 
 
 def test_alta_escribe_la_credencial_y_devuelve_secret_apim(client, parts):
@@ -167,3 +167,59 @@ def test_administrada_sigue_igual(client, parts):
     assert client.get(f"/v1/consumers/{NS}?{QS}").json()["state"] == "Active"
     es = yaml.safe_load(client.get(f"/v1/consumers/{NS}/secret-apim?{QS}").text.split("\n", 1)[1])
     assert es["spec"]["target"]["template"]["metadata"]["labels"]["app-id"] == c["appId"]
+
+
+# ======================================================= EKS (0.4.0, 25/11)
+def test_alta_en_eks_arma_el_path_del_cluster(client, parts):
+    c = onboard(client, platform="eks", eksCluster=EKS)
+    assert c["vaultPath"] == EKS_PATH and (c["platform"], c["eksCluster"]) == ("eks", EKS)
+    assert parts["vault"].data[EKS_PATH][1][ID] == c["appId"]
+    meta = parts["vault"].meta[EKS_PATH]
+    assert (meta["platform"], meta["eks_cluster"], meta["environment"]) == ("eks", EKS, "QA")
+    es = yaml.safe_load(c["secretApimManifest"].split("\n", 1)[1])
+    assert es["spec"]["dataFrom"][0]["extract"]["key"] == EKS_PATH
+    assert es["spec"]["target"]["template"]["metadata"]["annotations"]["apim.bgal/vault-path"] == EKS_PATH
+    # la reserva del app_id guarda quién la hizo (la adopción de la copia de un namespace migrado la compara)
+    assert parts["vault"].meta[f"{INDEX}/app-ids/{c['appId']}"] == {"namespace": NS, "tenant": TENANT}
+    # GET, secret-apim y baja con la query; sin ella es la de openshift, que no existe
+    assert client.get(f"/v1/consumers/{NS}?{QSE}").json()["appId"] == c["appId"]
+    assert client.get(f"/v1/consumers/{NS}?{QS}").status_code == 404
+    assert EKS_PATH in client.get(f"/v1/consumers/{NS}/secret-apim?{QSE}").text
+    r = client.delete(f"/v1/consumers/{NS}?{QSE}", headers=idem())
+    assert r.status_code == 200 and r.json()["state"] == "Revoked"
+
+
+def test_openshift_y_eks_del_mismo_namespace_conviven(client):
+    """Un namespace migrado de OpenShift a EKS tiene una credencial en cada path (24/11)."""
+    a = onboard(client)
+    b = onboard(client, platform="eks", eksCluster=EKS)
+    assert (a["vaultPath"], b["vaultPath"]) == (PATH, EKS_PATH) and a["appId"] != b["appId"]
+    assert a["platform"] == "openshift" and "eksCluster" not in a
+    assert client.get(f"/v1/consumers/{NS}?{QS}").json()["appId"] == a["appId"]
+
+
+def test_platform_y_eks_cluster_invalidos(client):
+    body = {"namespace": NS, "sigla": "sigla", "tier": "nonprd", **Q}
+    for extra, status, match in (
+        ({"platform": "eks"}, 422, "falta eksCluster"),
+        ({"eksCluster": EKS}, 422, "solo va con platform eks"),
+        ({"platform": "openshift", "eksCluster": EKS}, 422, "solo va con platform eks"),
+        ({"platform": "gke"}, 400, "platform"),
+        ({"platform": "eks", "eksCluster": "Arqc_Delta"}, 400, "eksCluster"),
+    ):
+        r = client.post("/v1/consumers", json={**body, **extra}, headers=idem())
+        assert r.status_code == status and match in r.json()["detail"], r.text
+    assert client.get(f"/v1/consumers/{NS}?{QS}&platform=eks").status_code == 422
+    assert client.get(f"/v1/consumers/{NS}?{QS}&platform=gke").status_code == 400
+
+
+def test_reintento_con_platform_omitido_o_explicito(client):
+    a = onboard(client, key="RITM0000200")
+    body = {"namespace": NS, "sigla": "sigla", "tier": "nonprd", **Q, "platform": "openshift"}
+    r = client.post("/v1/consumers", json=body, headers={"Idempotency-Key": "RITM0000200"})
+    assert r.status_code == 200 and r.json()["appId"] == a["appId"]
+
+
+def test_stg_es_int(client):
+    c = onboard(client, ns="sigla-app-int", environment="STG")
+    assert c["vaultPath"] == f"openshift-int/sigla-app-int/secret-apim-{TENANT}-v2"

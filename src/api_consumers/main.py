@@ -1,4 +1,4 @@
-"""FastAPI: rutas de openapi/consumers.yaml (v0.2.0-draft)."""
+"""FastAPI: rutas de openapi/consumers.yaml (v0.4.0-draft)."""
 
 from __future__ import annotations
 
@@ -16,7 +16,15 @@ from .config import Settings, get_settings
 from .errors import Problem
 from .integrations import build_threescale
 from .logging_setup import setup_logging
-from .models import ConsumerRequest, RotationAction, RotationRequest, ThreeScaleApplicationRequest
+from .models import (
+    DNS1123,
+    AdoptionRequest,
+    AppIdFix,
+    ConsumerRequest,
+    RotationAction,
+    RotationRequest,
+    ThreeScaleApplicationRequest,
+)
 from .service import Cred, Runner, Service
 from .subscriber import build_subscriber
 from .vault import build_vault
@@ -90,10 +98,14 @@ def create_app(settings: Settings | None = None, service: Service | None = None)
         namespace: str,
         environment: str = Query(min_length=1, max_length=16),
         tenant: str = Query(pattern="^(b2b|b2c)$"),
+        platform: str | None = Query(default=None, pattern="^(openshift|eks)$"),
+        eks_cluster: str | None = Query(default=None, alias="eksCluster", pattern=DNS1123),
         sv: Service = Depends(svc),
     ) -> Cred:
-        """La credencial que identifican el namespace, el ambiente y el tenant (query obligatorios)."""
-        return sv.cred(namespace, environment, tenant)
+        """La credencial que identifican el namespace, el ambiente y el tenant (query obligatorios) y, en EKS, la
+        plataforma y el cluster (0.4.0; sin platform, openshift: lo que manda el API Subscriber). `eksCluster` y no
+        `cluster`: en las applications de 3scale, {cluster} es el cluster de 3scale."""
+        return sv.cred(namespace, environment, tenant, platform, eks_cluster)
 
     # ----------------------------------------------------------- consumers
     @app.post("/v1/consumers", status_code=201, dependencies=deps, tags=["consumers"])
@@ -113,6 +125,32 @@ def create_app(settings: Settings | None = None, service: Service | None = None)
     def get_secret_apim(c: Cred = Depends(cred), sv: Service = Depends(svc)):
         return PlainTextResponse(sv.secret_apim(c), media_type="application/yaml")
 
+    # ------------------------------------------- adopción (0.4.0, 25/11)
+    # Onboarding de una credencial preexistente (Unmanaged) con el app_id que informa su dueño o DevSecOps: lo que hacía
+    # adopt-credential.sh. Solo metadata y la reserva del app_id; nunca lee ni devuelve la key.
+    DryRun = Query(default=False, alias="dryRun")
+
+    @app.post("/v1/consumers/{namespace}/adoption", status_code=201, dependencies=deps, tags=["adoption"])
+    def adopt_consumer(
+        body: AdoptionRequest,
+        c: Cred = Depends(cred),
+        idempotency_key: str = IdemKey,
+        dry_run: bool = DryRun,
+        sv: Service = Depends(svc),
+    ):
+        status, view = sv.adopt(c, body.model_dump(exclude_none=True), idempotency_key, dry_run)
+        return JSONResponse(view, status_code=status)
+
+    @app.patch("/v1/consumers/{namespace}/adoption", dependencies=deps, tags=["adoption"])
+    def fix_adoption(
+        body: AppIdFix,
+        c: Cred = Depends(cred),
+        idempotency_key: str = IdemKey,  # noqa: ARG001 (la corrección es idempotente por estado)
+        dry_run: bool = DryRun,
+        sv: Service = Depends(svc),
+    ):
+        return sv.fix_app_id(c, body.model_dump(), dry_run)
+
     # ----------------------------------------------------------- rotations
     @app.post("/v1/consumers/{namespace}/rotations", status_code=202, dependencies=deps, tags=["rotations"])
     def start_rotation(
@@ -122,7 +160,7 @@ def create_app(settings: Settings | None = None, service: Service | None = None)
         sv: Service = Depends(svc),
     ):
         view = sv.start_rotation(c, body.model_dump(exclude_none=True) if body else {}, idempotency_key)
-        query = urlencode({"environment": c.environment, "tenant": c.tenant})
+        query = urlencode(c.query)
         loc = f"/v1/consumers/{c.namespace}/rotations/{view['id']}?{query}"
         return JSONResponse(view, status_code=202, headers={"Location": loc})
 

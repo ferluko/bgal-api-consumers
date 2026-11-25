@@ -21,6 +21,10 @@ QS = "environment=QA&tenant=b2c"
 PATH = f"openshift-qas/{NS}/secret-apim-{TENANT}-v2"
 ID, KEY = "app_id_b2c", "app_key_b2c"
 INDEX = "apim-nonprd/consumers/_index"
+# EKS (0.4.0): un namespace de Vault por cluster (admin/eks-<cluster>), un KV por namespace; sin ambiente en el path
+EKS = "arqc-delta-136"
+EKS_PATH = f"eks-{EKS}/{NS}/data/secret-apim-{TENANT}-v2"
+QSE = f"{QS}&platform=eks&eksCluster={EKS}"
 
 
 @pytest.fixture

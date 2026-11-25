@@ -1,6 +1,6 @@
 """Rotación coordinada con el API Subscriber (ADR API Consumers D4): sin leer la key vieja."""
 
-from conftest import ID, KEY, NS, PATH, QS, TENANT, cred, idem, make_service, onboard
+from conftest import EKS, EKS_PATH, ID, KEY, NS, PATH, QS, QSE, TENANT, cred, idem, make_service, onboard
 
 from api_consumers import service as service_mod
 
@@ -117,3 +117,25 @@ def test_recover_retoma_rotaciones_pendientes(client, parts, settings, monkeypat
     other = make_service(settings, vault=parts["vault"], sub=parts["subscriber"])["svc"]  # proceso nuevo
     other.recover()
     assert parts["vault"].meta[PATH]["rotation_state"] == "AwaitingConsumer"
+
+
+def test_rotacion_de_una_credencial_de_eks(client, parts):
+    """0.4.0: la rotación escribe en el path del cluster de EKS y el Location lleva platform y eksCluster."""
+    c = onboard(client, platform="eks", eksCluster=EKS)
+    r = client.post(f"/v1/consumers/{NS}/rotations?{QSE}", headers=idem())
+    rot = r.json()
+    assert r.status_code == 202 and r.headers["location"] == f"/v1/consumers/{NS}/rotations/{rot['id']}?{QSE}"
+    assert rot["state"] == "AwaitingConsumer" and parts["vault"].current[EKS_PATH] == 2
+    assert parts["vault"].data[EKS_PATH][2][ID] == c["appId"] and PATH not in parts["vault"].current
+    r = client.patch(f"/v1/consumers/{NS}/rotations/{rot['id']}?{QSE}", json={"action": "complete"}, headers=idem())
+    assert r.json()["state"] == "Completed"
+
+
+def test_recover_retoma_una_rotacion_de_eks(client, parts, settings, monkeypatch):
+    onboard(client, platform="eks", eksCluster=EKS)
+    monkeypatch.setattr(parts["svc"], "_drive", lambda ns: None)
+    client.post(f"/v1/consumers/{NS}/rotations?{QSE}", headers=idem())
+    monkeypatch.undo()
+    other = make_service(settings, vault=parts["vault"], sub=parts["subscriber"])["svc"]  # proceso nuevo
+    other.recover()
+    assert parts["vault"].meta[EKS_PATH]["rotation_state"] == "AwaitingConsumer"

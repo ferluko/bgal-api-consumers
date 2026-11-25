@@ -43,6 +43,9 @@ def test_lab_render():
     assert not by_kind(docs, "Role") and not by_kind(docs, "ClusterRoleBinding"), "no toca el cluster; approle en lab"
     env = by_kind(docs, "ConfigMap", "api-consumers-env")[0]["data"]
     assert env["APICON_VAULT_AUTH"] == "approle" and env["APICON_CONSUMER_STORE_NAME"] == "vault-apim-consumer-nonprd"
+    # 0.4.0: credenciales de los namespaces de EKS (un namespace de Vault por cluster); STG es INT
+    assert env["APICON_EKS_CREDENTIAL_PATH_TEMPLATE"] == "eks-{cluster}/{namespace}/data/secret-apim-{tenant}-v2"
+    assert yaml.safe_load(env["APICON_VAULT_ENVS"])["stg"] == "int"
     c = by_kind(docs, "Deployment")[0]["spec"]["template"]["spec"]["containers"][0]
     assert not [e for e in c.get("env", []) if "valueFrom" in e], "ningún secreto como variable de entorno"
     vol = next(
