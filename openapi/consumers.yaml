@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: API Consumers
-  version: 0.5.0-draft
+  version: 0.5.1-draft
   description: |
     Identidad del consumidor: una credencial (App ID / App Key) por namespace **y tenant**, su alta, baja y rotación.
     Es el **único** servicio que escribe credenciales en Vault, con la convención de DevSecOps (06/10 y 07/10):
@@ -37,7 +37,8 @@ info:
     consumidor ya usa en 3scale, de su application en el admin del `cluster` (cuenta de la sigla), y los escribe en
     Vault: el consumidor no cambia de credencial y no se lee la credencial vieja de Vault. La application se elige por
     `applicationId` o por el servicio (`serviceId`/`systemName`); una application ambigua o con más de una key da 409
-    (se unifica antes). En la migración la dispara el API Subscriber (alta con `origin: 3scale`). Ya no existe
+    (se unifica antes). Una reserva del índice del mismo namespace cuenta como propia (0.5.1): el reintento y el alta
+    después de una baja no dan 409. En la migración la dispara el API Subscriber (alta con `origin: 3scale`). Ya no existe
     `threescale.syncCredentials`: la convivencia con 3scale son las applications de las suscripciones (abajo).
 
     **Namespace de Vault `apim` (27/11):** con el namespace nuevo, el path es configuración

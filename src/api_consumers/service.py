@@ -160,12 +160,19 @@ class Service:
     def _meta(self, c: Cred) -> dict | None:
         return self.vault.metadata(c.path)
 
-    def _index(self, kind: str, value: str, ns: str) -> bool:
-        """Unicidad atómica: crea `<mount>/<index_prefix>/<kind>/<value>` con cas=0. False si ya existía."""
+    def _index(self, kind: str, value: str, ns: str, reuse: bool = False) -> bool:
+        """Unicidad atómica: crea `<mount>/<index_prefix>/<kind>/<value>` con cas=0. False si ya existía. Con
+        `reuse` (importación, 0.5.0), una reserva del mismo namespace cuenta como propia: el reintento de un alta que
+        reservó y falló antes de escribir la credencial, o el alta de nuevo después de una baja (el app_id importado
+        es fijo)."""
+        path = f"{self.s.index_root}/{kind}/{value}"
         try:
-            self.vault.write(f"{self.s.index_root}/{kind}/{value}", {"namespace": ns, "created_at": now()}, cas=0)
+            self.vault.write(path, {"namespace": ns, "created_at": now()}, cas=0)
             return True
         except CasMismatch:
+            if reuse and self.vault.index_owner(path) == ns:
+                log.info("importación de %s: la reserva %s ya es suya (reintento o alta después de una baja)", ns, kind)
+                return True
             return False
 
     def _register_rotation(self, c: Cred) -> None:
@@ -280,9 +287,9 @@ class Service:
                     "threescale_import_service": origin["service_id"],
                     "threescale_import_application": origin["application"],
                 }
-                if not self._index("app-ids", app_id, ns):
+                if not self._index("app-ids", app_id, ns, reuse=True):
                     raise conflict(f"el App ID importado {app_id} ya está en uso por otro consumidor")
-                if not self._index("key-fp", fingerprint(app_key), ns):
+                if not self._index("key-fp", fingerprint(app_key), ns, reuse=True):
                     raise conflict("la credencial importada colisiona con la de otro consumidor (H-03)")
             else:
                 for _ in range(10):

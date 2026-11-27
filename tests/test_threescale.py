@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 import pytest
-from conftest import KEY, NS, PATH, QS, TENANT, TOKEN, idem, make_service, onboard
+from conftest import INDEX, KEY, NS, PATH, QS, TENANT, TOKEN, idem, make_service, onboard
 from fastapi.testclient import TestClient
 
 from api_consumers.main import create_app
@@ -250,3 +250,33 @@ def test_import_sin_admins_501_y_sin_selector_400(client):
     assert r.status_code == 400 and "applicationId, serviceId o systemName" in r.text
     r = client.post("/v1/consumers", json={**body, "threescale": {"syncCredentials": True}}, headers=idem())
     assert r.status_code == 400, "syncCredentials ya no existe (0.5.0)"
+
+
+def test_import_reintento_y_alta_despues_de_una_baja_reusan_la_reserva_propia(ts, monkeypatch):
+    """El app_id importado es fijo: si un alta reservó el índice y falló antes de escribir la credencial, el
+    reintento (con otra Idempotency-Key) no puede dar 409 para siempre. Una reserva del mismo namespace es propia; la
+    de otro, no."""
+    c, parts, admins = ts
+    _legacy(admins)
+    vault = parts["vault"]
+    real_write = vault.write
+
+    def falla_una_vez(path, data, cas):
+        if path == PATH:
+            monkeypatch.setattr(vault, "write", real_write)
+            raise RuntimeError("Vault no responde")
+        return real_write(path, data, cas)
+
+    monkeypatch.setattr(vault, "write", falla_una_vez)
+    with pytest.raises(RuntimeError):
+        _import(c, serviceId="100")
+    assert PATH not in vault.data and f"{INDEX}/app-ids/abcd1234" in vault.current, "quedó la reserva, sin credencial"
+    r = _import(c, serviceId="100")
+    assert r.status_code == 201 and r.json()["appId"] == "abcd1234", r.text
+    # baja y alta de nuevo del mismo namespace: la reserva sigue siendo suya
+    assert c.delete(f"/v1/consumers/{NS}?{QS}", headers=idem()).status_code == 200
+    r = _import(c, serviceId="100")
+    assert r.status_code == 201 and r.json()["state"] == "Active", r.text
+    # otro namespace con la misma application: 409 como siempre
+    r = _import(c, ns="sigla-otro-qa", serviceId="100")
+    assert r.status_code == 409 and "ya está en uso" in r.json()["detail"]
