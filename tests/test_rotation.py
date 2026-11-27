@@ -117,3 +117,52 @@ def test_recover_retoma_rotaciones_pendientes(client, parts, settings, monkeypat
     other = make_service(settings, vault=parts["vault"], sub=parts["subscriber"])["svc"]  # proceso nuevo
     other.recover()
     assert parts["vault"].meta[PATH]["rotation_state"] == "AwaitingConsumer"
+
+
+# ================================================== un Subscriber por ambiente (0.5.0)
+def test_cada_credencial_va_al_subscriber_de_su_ambiente(settings):
+    import json as _json
+
+    from conftest import TOKEN
+    from fastapi.testclient import TestClient
+
+    from api_consumers.main import create_app
+    from api_consumers.service import Runner, Service
+    from api_consumers.subscriber import FakeSubscriber, SubscriberRouter, build_subscriber
+    from api_consumers.vault import MemoryVault
+
+    qas, dev = FakeSubscriber(), FakeSubscriber()
+    router = SubscriberRouter({"qas": qas, "dev": dev}, None, settings.vault_env)
+    svc = Service(settings, MemoryVault(), router, Runner("inline", 1))
+    with TestClient(create_app(settings, svc)) as c:
+        c.headers.update({"Authorization": f"Bearer {TOKEN}"})
+        for env in ("QA", "dev", "int"):
+            body = {"namespace": "sigla-app", "sigla": "sigla", "tier": "nonprd", "environment": env, "tenant": "b2c"}
+            assert c.post("/v1/consumers", json=body, headers=idem()).status_code == 201
+        r = c.post("/v1/consumers/sigla-app/rotations?environment=QA&tenant=b2c", headers=idem())
+        assert r.status_code == 202 and r.json()["state"] == "AwaitingConsumer", r.text
+        assert [x[0] for x in qas.calls] == ["open", "refresh"] and dev.calls == []
+        # int no tiene Subscriber: 422 antes de escribir nada
+        r = c.post("/v1/consumers/sigla-app/rotations?environment=int&tenant=b2c", headers=idem())
+        assert r.status_code == 422 and "sin API Subscriber para el ambiente int" in r.json()["detail"]
+        assert "rotation_id" not in svc.vault.meta["openshift-int/sigla-app/secret-apim-b2c-v2"]
+        dev.subs["sigla-app"] = 1
+        r = c.delete("/v1/consumers/sigla-app?environment=dev&tenant=b2c", headers=idem())
+        assert r.status_code == 409 and "suscripciones vivas" in r.json()["detail"]
+        rid = svc.vault.meta["openshift-qas/sigla-app/secret-apim-b2c-v2"]["rotation_id"]
+        q = "environment=QA&tenant=b2c"
+        r = c.patch(f"/v1/consumers/sigla-app/rotations/{rid}?{q}", json={"action": "complete"}, headers=idem())
+        assert r.json()["state"] == "Completed" and [x[0] for x in qas.calls][-1] == "close" and dev.calls == []
+        assert c.delete(f"/v1/consumers/sigla-app?{q}", headers=idem()).status_code == 200
+        r = c.delete("/v1/consumers/sigla-app?environment=int&tenant=b2c", headers=idem())
+        assert r.status_code == 422
+    # el Secret: {ambiente: {url, token}}, con los ambientes como los informa ServiceNow
+    s = settings.model_copy(
+        update={
+            "subscriber_mode": "http",
+            "subscriber_url": "",
+            "subscriber_endpoints": _json.dumps({"dev": {"url": "http://sub-dev"}, "QAs": {"url": "http://sub-qas"}}),
+        }
+    )
+    r = build_subscriber(s)
+    assert isinstance(r, SubscriberRouter) and sorted(r.by_env) == ["dev", "qas"] and r.default is None

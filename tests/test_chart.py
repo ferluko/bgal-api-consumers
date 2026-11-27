@@ -52,6 +52,8 @@ def test_lab_render():
     assert paths["vault_secret_id"] == "APICON_VAULT_SECRET_ID" and paths["subscriber_url"] == "APICON_SUBSCRIBER_URL"
     # 3scale (0.3.0): los tokens de los admins como archivo; los admins y la cuenta los pasa toolkit-up (sin hosts acá)
     assert paths["threescale_tokens"] == "APICON_THREESCALE_TOKENS"
+    assert paths["subscriber_endpoints"] == "APICON_SUBSCRIBER_ENDPOINTS"  # 0.5.0: un Subscriber por ambiente
+    assert "APICON_THREESCALE_MODE" not in env, "0.5.0: sin el stub de 3scale"
     assert env["APICON_THREESCALE_ADMINS"] == "[]" and env["APICON_THREESCALE_ACCOUNT_EMAIL"] == ""
 
 

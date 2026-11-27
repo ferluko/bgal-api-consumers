@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 DNS1123 = r"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$"
 
@@ -14,19 +14,26 @@ class _Base(BaseModel):
 
 
 class ImportFrom3scale(_Base):
-    tenant: str | None = None
-    applicationId: str | None = None
+    """Migración desde 3scale (0.5.0): el app_id y la key de la application del consumidor en el admin de 3scale de
+    `cluster` (cuenta de la sigla). La application se elige por `applicationId` (id interno de 3scale) o por el
+    servicio (`serviceId` o `systemName`)."""
 
+    cluster: str = Field(min_length=1, max_length=63)
+    systemName: str | None = Field(default=None, min_length=1)  # noqa: N815
+    serviceId: str | None = Field(default=None, min_length=1)  # noqa: N815
+    applicationId: str | None = Field(default=None, min_length=1)  # noqa: N815
 
-class ThreeScaleSync(_Base):
-    syncCredentials: bool = False
-    tenant: str | None = None
-    applicationId: str | None = None
+    @model_validator(mode="after")
+    def _which(self) -> ImportFrom3scale:
+        if not (self.applicationId or self.serviceId or self.systemName):
+            raise ValueError("importFrom3scale requiere applicationId, serviceId o systemName")
+        return self
 
 
 class ConsumerRequest(_Base):
-    """Alta de la credencial de un namespace para un ambiente y un tenant (openshift-<ambiente>/<ns>/
-    secret-apim-<tenant>-v2). Un namespace puede tener una por tenant."""
+    """Alta de la credencial de un namespace para un ambiente y un tenant (path de APICON_CREDENTIAL_PATH_TEMPLATE:
+    openshift-<ambiente>/<ns>/secret-apim-<tenant>-v2, o <ambiente>/<ns>/… en el namespace de Vault `apim`). Un
+    namespace puede tener una por tenant."""
 
     namespace: str = Field(pattern=DNS1123)
     sigla: str = Field(min_length=1)
@@ -36,7 +43,6 @@ class ConsumerRequest(_Base):
     owner: str | None = None
     servicenowRef: str | None = None
     importFrom3scale: ImportFrom3scale | None = None
-    threescale: ThreeScaleSync | None = None
 
 
 class RotationRequest(_Base):

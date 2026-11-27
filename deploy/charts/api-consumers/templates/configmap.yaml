@@ -31,7 +31,6 @@ data:
   APICON_ROTATION_DEADLINE_DAYS: {{ $c.rotationDeadlineDays | quote }}
   APICON_ROTATION_POLL_S: {{ $c.rotationPollS | quote }}
   APICON_ROTATION_STEP_TIMEOUT_S: {{ $c.rotationStepTimeoutS | quote }}
-  APICON_THREESCALE_MODE: {{ $c.threescaleMode | quote }}
   APICON_THREESCALE_ADMINS: {{ toJson $a.threescale.admins | quote }}
   APICON_THREESCALE_ACCOUNT_EMAIL: {{ $a.threescale.accountEmail | quote }}
   APICON_THREESCALE_VERIFY: {{ $a.threescale.verify | quote }}

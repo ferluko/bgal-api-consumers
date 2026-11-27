@@ -1,4 +1,4 @@
-"""Fixtures: Vault en memoria (sin lectura de datos), API Subscriber simulada, 3scale stub, worker inline."""
+"""Fixtures: Vault en memoria (sin lectura de datos), API Subscriber simulada, worker inline."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api_consumers.config import Settings
-from api_consumers.integrations import ThreeScaleStub
 from api_consumers.main import create_app
 from api_consumers.service import Runner, Service
 from api_consumers.subscriber import FakeSubscriber
@@ -29,7 +28,6 @@ def settings() -> Settings:
         api_tokens=TOKEN,
         vault_mode="memory",
         subscriber_mode="fake",
-        threescale_mode="stub",
         worker_mode="inline",
         rotation_poll_s=0.01,
         rotation_step_timeout_s=0.1,
@@ -39,9 +37,8 @@ def settings() -> Settings:
 def make_service(settings: Settings, vault: MemoryVault | None = None, sub: FakeSubscriber | None = None) -> dict:
     vault = vault or MemoryVault()
     sub = sub or FakeSubscriber()
-    ts = ThreeScaleStub()
-    svc = Service(settings, vault, sub, ts, Runner("inline", 1))
-    return {"svc": svc, "vault": vault, "subscriber": sub, "threescale": ts}
+    svc = Service(settings, vault, sub, Runner("inline", 1))
+    return {"svc": svc, "vault": vault, "subscriber": sub}
 
 
 @pytest.fixture
