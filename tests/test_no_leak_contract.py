@@ -2,10 +2,12 @@
 
 from pathlib import Path
 
+import pytest
 import yaml
 from conftest import KEY, NS, PATH, QS, idem, onboard
 from openapi_spec_validator import validate
 
+from api_consumers.config import Settings
 from api_consumers.logging_setup import redact
 from api_consumers.vault import HvacVault, MemoryVault
 
@@ -14,12 +16,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_el_cliente_de_vault_solo_lee_un_campo_para_3scale():
     """D3: escribir sin leer, con una excepción (29/10): `read_field`, que usa solo el cliente de 3scale para dar de
-    alta la application con la misma key (tests/test_threescale.py verifica quién lo llama). Ningún otro método de
-    lectura de datos."""
+    alta la application con la misma key (tests/test_threescale.py verifica quién lo llama). La otra lectura (0.5.0),
+    `index_owner`, es solo de entradas del índice (namespace dueño, nada secreto) y rechaza cualquier otro path."""
     for cls in (HvacVault, MemoryVault):
         assert [m for m in dir(cls) if m.startswith("read")] == ["read_field"], cls
     src = (ROOT / "src/api_consumers/vault.py").read_text()
-    assert src.count("read_secret_version") == 1 and "read_secret(" not in src
+    assert src.count("read_secret_version") == 2 and "read_secret(" not in src
+    hv = object.__new__(HvacVault)  # sin login: el chequeo del path va antes de cualquier llamada a Vault
+    hv._s = Settings(vault_mount="apim-nonprod")
+    with pytest.raises(ValueError, match="no es una entrada del índice"):
+        hv.index_owner("openshift-int/ns-x/data/secret-apim-b2c-v2")
 
 
 def test_la_key_no_aparece_en_respuestas_metadata_ni_logs(client, parts, capfd):

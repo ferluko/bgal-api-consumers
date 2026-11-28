@@ -27,8 +27,8 @@ from typing import Any
 
 from . import render
 from .config import TENANTS, Settings
-from .errors import Problem, conflict, not_found, not_implemented, unprocessable
-from .integrations import ThreeScale, deliver_callback
+from .errors import Problem, conflict, not_found, unprocessable
+from .integrations import deliver_callback
 from .subscriber import Subscriber
 from .threescale import Applications
 from .vault import CasMismatch, Vault, fingerprint, generate_app_id, generate_app_key, now
@@ -118,14 +118,12 @@ class Service:
         settings: Settings,
         vault: Vault,
         subscriber: Subscriber,
-        threescale: ThreeScale,
         runner: Runner,
         applications: Applications | None = None,
     ):
         self.s = settings
         self.vault = vault
         self.subscriber = subscriber
-        self.threescale = threescale
         self.runner = runner
         self.apps = applications or Applications(settings, vault)
         self._locks: dict[str, threading.RLock] = defaultdict(threading.RLock)
@@ -150,6 +148,11 @@ class Service:
             app_key_field=self.s.app_key_field.format(tenant=tenant),
         )
 
+    def _sub(self, c: Cred) -> Subscriber:
+        """El API Subscriber del ambiente de la credencial (0.5.0: una API Consumers para varios Subscribers,
+        `subscriber_endpoints`). 422 si el ambiente no tiene Subscriber."""
+        return self.subscriber.for_env(c.environment)
+
     def _lock(self, c: Cred) -> threading.RLock:
         with self._guard:
             return self._locks[c.path]
@@ -157,12 +160,19 @@ class Service:
     def _meta(self, c: Cred) -> dict | None:
         return self.vault.metadata(c.path)
 
-    def _index(self, kind: str, value: str, ns: str) -> bool:
-        """Unicidad atómica: crea `<mount>/<index_prefix>/<kind>/<value>` con cas=0. False si ya existía."""
+    def _index(self, kind: str, value: str, ns: str, reuse: bool = False) -> bool:
+        """Unicidad atómica: crea `<mount>/<index_prefix>/<kind>/<value>` con cas=0. False si ya existía. Con
+        `reuse` (importación, 0.5.0), una reserva del mismo namespace cuenta como propia: el reintento de un alta que
+        reservó y falló antes de escribir la credencial, o el alta de nuevo después de una baja (el app_id importado
+        es fijo)."""
+        path = f"{self.s.index_root}/{kind}/{value}"
         try:
-            self.vault.write(f"{self.s.index_root}/{kind}/{value}", {"namespace": ns, "created_at": now()}, cas=0)
+            self.vault.write(path, {"namespace": ns, "created_at": now()}, cas=0)
             return True
         except CasMismatch:
+            if reuse and self.vault.index_owner(path) == ns:
+                log.info("importación de %s: la reserva %s ya es suya (reintento o alta después de una baja)", ns, kind)
+                return True
             return False
 
     def _register_rotation(self, c: Cred) -> None:
@@ -248,9 +258,6 @@ class Service:
         ns = req["namespace"]
         cr = self.cred(ns, req.get("environment"), req.get("tenant"))
         h = _hash(req)
-        ts = req.get("threescale") or {}
-        if ts.get("syncCredentials") and self.s.threescale_mode == "disabled":
-            raise not_implemented("sincronización con 3scale no habilitada (APICON_THREESCALE_MODE)")
         with self._lock(cr):
             md = self._meta(cr)
             if md and md["custom"].get("state") != "revoked":
@@ -267,11 +274,22 @@ class Service:
                 raise conflict(f"el namespace {ns} ya tiene credencial para {cr.environment} y {cr.tenant}")
 
             imp = req.get("importFrom3scale")
-            if imp:
-                app_id, app_key = self.threescale.get_credentials(imp.get("tenant", ""), imp.get("applicationId", ""))
-                if not self._index("app-ids", app_id, ns):
+            imp_meta: dict[str, str] = {}
+            if imp:  # migración (0.5.0): la credencial que el consumidor ya usa en 3scale, sin leer la vieja de Vault
+                sigla = req["sigla"].upper()
+                app_id, app_key, origin = self.apps.import_credentials(
+                    imp["cluster"], cr.tenant, sigla, imp.get("serviceId"), imp.get("systemName"),
+                    imp.get("applicationId"),
+                )  # fmt: skip
+                imp_meta = {
+                    "threescale_sigla": sigla,
+                    "threescale_import_cluster": origin["cluster"],
+                    "threescale_import_service": origin["service_id"],
+                    "threescale_import_application": origin["application"],
+                }
+                if not self._index("app-ids", app_id, ns, reuse=True):
                     raise conflict(f"el App ID importado {app_id} ya está en uso por otro consumidor")
-                if not self._index("key-fp", fingerprint(app_key), ns):
+                if not self._index("key-fp", fingerprint(app_key), ns, reuse=True):
                     raise conflict("la credencial importada colisiona con la de otro consumidor (H-03)")
             else:
                 for _ in range(10):
@@ -290,15 +308,6 @@ class Service:
                 {cr.app_id_field: app_id, cr.app_key_field: app_key},
                 cas=md["current_version"] if md else 0,
             )
-            ts_meta: dict[str, str] = {"threescale_state": "NotApplicable"}
-            if ts.get("syncCredentials"):
-                ts_meta = {"threescale_tenant": ts.get("tenant"), "threescale_app": ts.get("applicationId")}
-                try:
-                    self.threescale.set_credentials(ts.get("tenant", ""), ts.get("applicationId", ""), app_id, app_key)
-                    ts_meta["threescale_state"] = "InSync"
-                except Problem as e:
-                    ts_meta["threescale_state"] = "Failed"
-                    log.warning("sync 3scale falló para %s: %s", ns, e.detail)
             del app_key
             self.vault.set_metadata(
                 cr.path,
@@ -317,7 +326,7 @@ class Service:
                     "created_by": "api-consumers",
                     "idempotency_key": idem_key,
                     "request_hash": h,
-                    **ts_meta,
+                    **imp_meta,
                 },
                 drop={*ROT_KEYS, "revoked_at", "rotated_at"},
             )
@@ -381,7 +390,7 @@ class Service:
         if not self.apps.enabled:
             return
         try:
-            subs = self.subscriber.list_subscriptions(cr.namespace)
+            subs = self._sub(cr).list_subscriptions(cr.namespace)
             clusters = [
                 cl["cluster"]
                 for sub in subs
@@ -413,7 +422,7 @@ class Service:
                 return self.consumer_view(cr, md)
             if c.get("rotation_id") and c.get("rotation_state") not in TERMINAL:
                 raise conflict(f"{cr.label} tiene una rotación en curso ({c.get('rotation_state')})")
-            if [s for s in self.subscriber.list_subscriptions(ns) if s.get("tenant") in (None, cr.tenant)]:
+            if [s for s in self._sub(cr).list_subscriptions(ns) if s.get("tenant") in (None, cr.tenant)]:
                 raise conflict(f"{cr.label} tiene suscripciones vivas: darlas de baja antes")
             # tombstone sin leer la key: el app_id sale de la metadata (la policy no tiene delete)
             self.vault.write(
@@ -467,6 +476,7 @@ class Service:
                 return self.rotation_view(cr, md)
             if c.get("rotation_id") and c.get("rotation_state") not in TERMINAL:
                 raise conflict(f"{cr.label} ya tiene una rotación en curso ({c.get('rotation_state')})")
+            self._sub(cr)  # 422 sin Subscriber para el ambiente, antes de escribir la metadata
             ts = now()
             deadline = (datetime.now(timezone.utc) + timedelta(days=self.s.rotation_deadline_days)).isoformat(
                 timespec="seconds"
@@ -520,11 +530,11 @@ class Service:
         self.runner.submit(self._drive, cr)
         return self.rotation_view(cr, self._meta(cr))
 
-    def _wait(self, op_id: str) -> str:
+    def _wait(self, sub: Subscriber, op_id: str) -> str:
         """Espera una operación del API Subscriber hasta un estado final o el timeout del paso."""
         deadline = time.monotonic() + self.s.rotation_step_timeout_s
         while True:
-            st = self.subscriber.operation(op_id).get("state")
+            st = sub.operation(op_id).get("state")
             if st in ("Succeeded", "Failed", "PartiallySynced"):
                 return st
             if time.monotonic() >= deadline:
@@ -539,6 +549,7 @@ class Service:
                 return
             self._driving.add(cr.path)
         try:
+            sub = self._sub(cr)
             for _ in range(10):
                 md = self._meta(cr)
                 c = md["custom"]
@@ -546,7 +557,7 @@ class Service:
                 if st == "Requested":
                     try:
                         pinned = int(c["rotation_pinned_version"])
-                        op = self.subscriber.open_overlap(ns, tenant, rid, pinned, f"{rid}-open")
+                        op = sub.open_overlap(ns, tenant, rid, pinned, f"{rid}-open")
                     except Problem as e:
                         if e.status == 409:
                             self._fail(cr, e.detail)
@@ -556,13 +567,13 @@ class Service:
                         if self._meta(cr)["custom"].get("rotation_state") == "Requested":
                             self._set_rot(cr, state="OverlapOpening", op=op["id"])
                 elif st == "OverlapOpening":
-                    res = self._wait(c["rotation_op"])
+                    res = self._wait(sub, c["rotation_op"])
                     if not self._write_new_key(cr, res):
                         continue
                 elif st == "KeyWritten":
                     ok = False
                     try:
-                        ok = self.subscriber.refresh(ns, tenant)
+                        ok = sub.refresh(ns, tenant)
                     except Problem as e:
                         log.warning("refresh de %s: %s", cr.label, e.detail)
                     note = "" if ok else "refresh no confirmado: el Secret principal toma la key en su refreshInterval"
@@ -571,8 +582,8 @@ class Service:
                     return
                 elif st in ("Completing", "Aborting"):
                     key = f"{rid}-{'close' if st == 'Completing' else 'abort'}"
-                    op = self.subscriber.close_overlap(ns, tenant, key)
-                    res = self._wait(op["id"]) if op else "Succeeded"
+                    op = sub.close_overlap(ns, tenant, key)
+                    res = self._wait(sub, op["id"]) if op else "Succeeded"
                     if res != "Succeeded":
                         self._set_rot(cr, error=f"el API Subscriber no confirmó el cierre de la ventana ({res})")
                         return
@@ -614,15 +625,6 @@ class Service:
             except CasMismatch:
                 self._fail(cr, f"la credencial cambió en Vault después de fijar la versión {pinned}")
                 return False
-            if c.get("threescale_state") in ("InSync", "Failed"):
-                try:
-                    self.threescale.set_credentials(
-                        c.get("threescale_tenant", ""), c.get("threescale_app", ""), c.get("app_id", ""), app_key
-                    )
-                    self.vault.set_metadata(cr.path, {"threescale_state": "InSync"})
-                except Problem as e:
-                    self.vault.set_metadata(cr.path, {"threescale_state": "Failed"})
-                    log.warning("sync 3scale falló para %s: %s", cr.label, e.detail)
             self._threescale_keys(cr, c, "add", app_key)
             del app_key
             self._set_rot(cr, state="KeyWritten", new_version=new)

@@ -60,6 +60,8 @@ class Settings(BaseSettings):
     subscriber_mode: Literal["http", "fake"] = "http"
     subscriber_url: str = ""
     subscriber_token: str = ""
+    # 0.5.0: un Subscriber por ambiente (Secret, JSON {"dev": {"url", "token"}, "int": …}); subscriber_url, default
+    subscriber_endpoints: str = ""
     subscriber_verify: bool = True
     subscriber_ca_file: str = ""
     subscriber_timeout_s: float = 15
@@ -76,7 +78,6 @@ class Settings(BaseSettings):
     rotation_step_timeout_s: float = 900  # espera de cada operación del API Subscriber
 
     # --- Integraciones -----------------------------------------------------
-    threescale_mode: Literal["disabled", "stub"] = "disabled"
     # Applications de 3scale de las suscripciones (0.3.0, excepción a D3 del 29/10). Admins permitidos: JSON
     # [{match (regex del nombre completo del cluster), adminUrl ({t} = tenant, {cluster})}]; los pasa toolkit-up.sh
     # desde el chart del API Subscriber (repo privado: acá no van hosts internos). Vacío = 501.
@@ -103,6 +104,7 @@ class Settings(BaseSettings):
         "vault_secret_id",
         "subscriber_url",
         "subscriber_token",
+        "subscriber_endpoints",
         "callback_secret",
         "api_tokens",
         "threescale_tokens",

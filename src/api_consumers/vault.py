@@ -17,11 +17,14 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import logging
 import secrets
 from datetime import datetime, timezone
 from typing import Protocol
 
 from .config import Settings
+
+log = logging.getLogger(__name__)
 
 
 def generate_app_id() -> str:
@@ -65,6 +68,11 @@ class Vault(Protocol):
     def read_field(self, path: str, field: str) -> str | None:
         """Un campo de la versión actual. Solo lo usa el cliente de 3scale (threescale.py): es la excepción a D3 del
         29/10 para dar de alta la application con la misma app_key. None si no existe."""
+
+    def index_owner(self, path: str) -> str | None:
+        """El namespace dueño de una reserva del índice (app-ids, key-fp): solo entradas del índice, que no tienen
+        nada secreto (namespace y fecha). Para aceptar la reserva propia en el reintento de una importación (0.5.0).
+        None si no existe o si el rol no puede leerla."""
 
     def healthy(self) -> bool: ...
 
@@ -110,6 +118,10 @@ class MemoryVault:
     def read_field(self, path: str, field: str) -> str | None:
         cur = self.current.get(path)
         return (self.data.get(path, {}).get(cur) or {}).get(field) if cur else None
+
+    def index_owner(self, path: str) -> str | None:
+        cur = self.current.get(path)
+        return (self.data.get(path, {}).get(cur) or {}).get("namespace") if cur else None
 
     def list(self, prefix: str) -> list[str]:
         prefix = prefix.rstrip("/") + "/"
@@ -224,6 +236,20 @@ class HvacVault:
         except self._hvac.exceptions.InvalidPath:
             return None
         return (((r or {}).get("data") or {}).get("data") or {}).get(field)
+
+    def index_owner(self, path: str) -> str | None:
+        if not path.startswith(self._s.index_root.rstrip("/") + "/"):  # nunca una credencial
+            raise ValueError(f"index_owner: {path} no es una entrada del índice")
+        kv = self.client.secrets.kv.v2
+        try:
+            mount, rel = split_mount(path)
+            r = self._call(kv.read_secret_version, path=rel, mount_point=mount, raise_on_deleted_version=True)
+        except self._hvac.exceptions.InvalidPath:
+            return None
+        except self._hvac.exceptions.Forbidden:
+            log.warning("sin read en el índice (%s): una reserva propia no se puede reconocer en un reintento", mount)
+            return None
+        return (((r or {}).get("data") or {}).get("data") or {}).get("namespace")
 
     def list(self, prefix: str) -> list[str]:
         kv = self.client.secrets.kv.v2

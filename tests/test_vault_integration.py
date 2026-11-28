@@ -11,7 +11,6 @@ import time
 import pytest
 
 from api_consumers.config import Settings
-from api_consumers.integrations import ThreeScaleStub
 from api_consumers.service import Runner, Service
 from api_consumers.subscriber import FakeSubscriber
 from api_consumers.vault import CasMismatch, HvacVault
@@ -58,7 +57,7 @@ def test_cas_metadata_y_sin_lectura_de_datos():
 def test_alta_rotacion_y_baja_con_la_policy_minima():
     s = _settings()
     sub = FakeSubscriber()
-    svc = Service(s, HvacVault(s), sub, ThreeScaleStub(), Runner("inline", 1))
+    svc = Service(s, HvacVault(s), sub, Runner("inline", 1))
     ns = f"it-{int(time.time() * 1000)}"
     req = {"namespace": ns, "sigla": "it", "tier": "nonprd", "environment": "QA", "tenant": "b2c"}
     status, c = svc.create_consumer(req, "RITM-IT-1")

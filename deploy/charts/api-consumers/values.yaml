@@ -38,7 +38,6 @@ apiConsumers:
     rotationDeadlineDays: 7
     rotationPollS: 5
     rotationStepTimeoutS: 900
-    threescaleMode: disabled                      # disabled | stub
     callbackRetries: 3
     logLevel: INFO
 
@@ -66,12 +65,16 @@ apiConsumers:
     verify: true
     # Credencial del consumidor (convención de DevSecOps). Sin /data/, el primer segmento es el mount KV v2 (lab);
     # con /data/, el mount es todo lo anterior (Vault corporativo: openshift-{env}/{namespace}/data/secret-apim-{tenant}-v2).
+    # Namespace de Vault `apim` (27/11, cuando DevSecOps lo cree): namespace admin/apim, un KV por ambiente y el índice en
+    # el KV `index` → credentialPathTemplate "{env}/{namespace}/secret-apim-{tenant}-v2", mount "index".
     credentialPathTemplate: "openshift-{env}/{namespace}/secret-apim-{tenant}-v2"
     envs: {dev: dev, int: int, qa: qas, qas: qas, prd: prd}  # environment del pedido → openshift-<ambiente>
     mount: ""                                     # mount de los índices; default apim-<tier>
     indexPrefix: consumers/_index                 # índices de unicidad y registro de rotaciones (cas=0)
 
   # API Subscriber (ventana de rotación, suscripciones vivas). URL y token en el Secret: subscriber_url, subscriber_token.
+  # 0.5.0: una API Consumers para un Subscriber por ambiente (paas-svc-prdpg): subscriber_endpoints del Secret, JSON
+  # {"dev": {"url", "token"}, "int": …, "qas": …}; subscriber_url queda de default (o vacío).
   subscriber:
     verify: true
 
@@ -81,7 +84,8 @@ apiConsumers:
 
   # Secretos propios, materializados por ESO desde el Vault de plataforma (nunca en Git). Se montan como archivos en
   # /etc/api-consumers/secrets (APICON_SECRETS_DIR). Keys: api_tokens, callback_secret,
-  #   vault_role_id + vault_secret_id (approle) | vault_token (token), subscriber_url, subscriber_token
+  #   vault_role_id + vault_secret_id (approle) | vault_token (token), subscriber_url, subscriber_token,
+  #   subscriber_endpoints (0.5.0), threescale_tokens
   secrets:
     externalSecret:
       enabled: true

@@ -1,4 +1,4 @@
-"""3scale (convivencia) y callbacks. En el MVP, 3scale es un stub con la interfaz definitiva."""
+"""Callbacks de la rotación. 3scale está en `threescale.py` (applications, rotación e importación)."""
 
 from __future__ import annotations
 
@@ -7,46 +7,10 @@ import hmac
 import json
 import logging
 import time
-from typing import Protocol
 
 import httpx
 
-from .config import Settings
-from .errors import not_implemented, unprocessable
-
 log = logging.getLogger(__name__)
-
-
-class ThreeScale(Protocol):
-    def get_credentials(self, tenant: str, application_id: str) -> tuple[str, str]: ...
-    def set_credentials(self, tenant: str, application_id: str, app_id: str, app_key: str) -> None: ...
-
-
-class ThreeScaleDisabled:
-    def get_credentials(self, tenant: str, application_id: str) -> tuple[str, str]:
-        raise not_implemented("importación desde 3scale no habilitada en esta versión (APICON_THREESCALE_MODE)")
-
-    def set_credentials(self, tenant: str, application_id: str, app_id: str, app_key: str) -> None:
-        raise not_implemented("sincronización de credenciales con 3scale no habilitada (APICON_THREESCALE_MODE)")
-
-
-class ThreeScaleStub:
-    """Tests/e2e: guarda en memoria lo que se escribiría en 3scale."""
-
-    def __init__(self) -> None:
-        self.apps: dict[tuple[str, str], tuple[str, str]] = {}
-
-    def get_credentials(self, tenant: str, application_id: str) -> tuple[str, str]:
-        if (tenant, application_id) not in self.apps:
-            raise unprocessable(f"aplicación {application_id} no existe en 3scale ({tenant})")
-        return self.apps[(tenant, application_id)]
-
-    def set_credentials(self, tenant: str, application_id: str, app_id: str, app_key: str) -> None:
-        self.apps[(tenant, application_id)] = (app_id, app_key)
-
-
-def build_threescale(s: Settings) -> ThreeScale:
-    return ThreeScaleStub() if s.threescale_mode == "stub" else ThreeScaleDisabled()
 
 
 def sign(body: bytes, secret: str) -> str:

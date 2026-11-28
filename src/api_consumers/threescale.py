@@ -13,6 +13,9 @@ logger de httpx queda en WARNING, ver logging_setup). Los admins permitidos lleg
 
 En una rotación, la key nueva se agrega a las applications del app_id (3scale admite varias keys: es el solapamiento) y
 al completar se borran las demás.
+
+Migración (0.5.0, `importFrom3scale` del alta): el app_id y la key se toman de la application del consumidor en 3scale
+(`Applications.import_credentials`), no de la credencial vieja en Vault.
 """
 
 from __future__ import annotations
@@ -32,6 +35,7 @@ from .errors import Problem, conflict, not_implemented, unprocessable
 log = logging.getLogger(__name__)
 
 _DESC_PLAN = re.compile(r"\bplan=(\S+)")
+_LABEL = re.compile(r"[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?")
 
 
 def _unavailable(detail: str) -> Problem:
@@ -354,6 +358,53 @@ class Applications:
             app = admin.accept_application(str(acc["id"]), str(app["id"])) or app
         names = {str(p["id"]): p.get("system_name") or p.get("name") for p in plans}
         return _view(app, svc, names)
+
+    def import_credentials(
+        self,
+        cluster: str,
+        tenant: str,
+        sigla: str,
+        service_id: str | None,
+        system_name: str | None,
+        application_id: str | None,
+    ) -> tuple[str, str, dict]:
+        """Migración (0.5.0): (app_id, key, origen) de la application del consumidor en la cuenta de la sigla, en el
+        admin de 3scale de `cluster`. Sin leer Vault: la fuente es 3scale. Una application ambigua o con más de una key
+        da 409 (se unifica antes de migrar); la key nunca va en un mensaje."""
+        admin = self.admin(cluster, tenant)
+        acc = admin.account(sigla)
+        if not acc:
+            raise unprocessable(f"la sigla {sigla} no tiene cuenta en el 3scale de {cluster} ({tenant})")
+        apps = admin.applications(str(acc["id"]))
+        if application_id:
+            what = f"la application {application_id}"
+            cands = [a for a in apps if str(a.get("id")) == str(application_id)]
+        else:
+            svc = self._service(admin, cluster, service_id, system_name)
+            what = f"el servicio {svc.get('system_name') or svc['id']}"
+            cands = [a for a in apps if str(a.get("service_id")) == str(svc["id"])]
+        if not cands:
+            raise unprocessable(f"{what}: la cuenta {sigla} no tiene esa application en el 3scale de {cluster}")
+        if len(cands) > 1:
+            ids = ", ".join(sorted(str(a.get("id")) for a in cands))
+            raise conflict(
+                f"{what}: la cuenta {sigla} tiene {len(cands)} applications en el 3scale de {cluster} ({ids}): "
+                "indicar applicationId"
+            )
+        app = cands[0]
+        app_id = str(app.get("application_id") or "")
+        if not _LABEL.fullmatch(app_id):  # va como label app-id en el gateway (render del API Subscriber)
+            raise unprocessable(
+                f"la application {app['id']} de {sigla} en {cluster} no tiene un application_id que sirva de label"
+            )
+        keys = admin.keys(str(acc["id"]), str(app["id"]))
+        if len(keys) != 1:
+            raise conflict(
+                f"la application {app['id']} de {sigla} en {cluster} tiene {len(keys)} keys: unificarla a una antes "
+                "de importar (la API Consumers no lee la credencial vieja de Vault)"
+            )
+        origin = {"cluster": cluster, "service_id": str(app.get("service_id") or ""), "application": str(app["id"])}
+        return app_id, keys[0], origin
 
     def delete(self, custom: dict, cluster: str, tenant: str, service_id: str | None, system_name: str | None) -> bool:
         admin = self.admin(cluster, tenant)

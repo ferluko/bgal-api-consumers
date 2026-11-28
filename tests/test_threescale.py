@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 import pytest
-from conftest import KEY, NS, PATH, QS, TENANT, TOKEN, idem, make_service, onboard
+from conftest import INDEX, KEY, NS, PATH, QS, TENANT, TOKEN, idem, make_service, onboard
 from fastapi.testclient import TestClient
 
 from api_consumers.main import create_app
@@ -160,3 +160,123 @@ def test_plan_con_aprobacion_acepta_la_application(ts):
     r = _put(c, plan="bronze")
     assert r.status_code == 200 and r.json()["state"] == "live", r.text
     assert next(iter(admin.apps.values()))["state"] == "live"
+
+
+# ================================================== importación desde 3scale (0.5.0)
+QA_ADMIN = "https://b2c-admin.paas-qas.example"
+LEGACY_KEY = "e" * 32
+
+
+def _legacy(admins, app_id="abcd1234", keys=(LEGACY_KEY,), service="100", sigla="SIGLA") -> dict:
+    """Una application de 3scale de antes del toolkit: la cuenta de la sigla, su app_id y su key."""
+    admin = admins.setdefault(QA_ADMIN, MemoryAdmin(SERVICES, plans=["basic", "bronze", "gold"]))
+    acc = admin.create_account(sigla, f"{sigla}@example.invalid")
+    app = admin.create_application(acc["id"], f"{service}-basic", f"{sigla}App", "legacy", app_id, keys[0])
+    app["keys"] = list(keys)
+    return app
+
+
+def _import(c, ns=NS, **imp):
+    body = {"namespace": ns, "sigla": "sigla", "tier": "nonprd", "environment": "QA", "tenant": TENANT}
+    return c.post("/v1/consumers", json={**body, "importFrom3scale": {"cluster": "paas-qas", **imp}}, headers=idem())
+
+
+def test_import_toma_app_id_y_key_de_3scale_y_la_application_sigue_siendo_la_misma(ts):
+    c, parts, admins = ts
+    app = _legacy(admins)
+    r = _import(c, systemName="PRDC-greeting-echo")
+    assert r.status_code == 201, r.text
+    cons = r.json()
+    assert (cons["appId"], cons["origin"], cons["state"]) == ("abcd1234", "3scale-import", "Active")
+    assert LEGACY_KEY not in r.text, "la key nunca sale en la respuesta"
+    assert parts["vault"].data[PATH][1] == {"app_id_b2c": "abcd1234", KEY: LEGACY_KEY}
+    meta = parts["vault"].meta[PATH]
+    assert meta["threescale_sigla"] == "SIGLA" and meta["threescale_import_cluster"] == "paas-qas"
+    assert (meta["threescale_import_service"], meta["threescale_import_application"]) == ("100", app["id"])
+    assert cons["secretApimManifest"], "el alta devuelve el ExternalSecret para el namespace de la app"
+    # la suscripción que el API Subscriber pide después en 3scale encuentra la application importada: no duplica
+    assert _put(c).status_code == 200 and len(admins[QA_ADMIN].apps) == 1
+
+
+def test_import_ambiguo_por_servicio_pide_application_id(ts):
+    c, _parts, admins = ts
+    _legacy(admins, app_id="aaaa0001")
+    other = _legacy(admins, app_id="aaaa0002", keys=("d" * 32,))  # otro namespace de la misma sigla
+    r = _import(c, serviceId="100")
+    assert r.status_code == 409 and "indicar applicationId" in r.json()["detail"], r.text
+    r = _import(c, applicationId=other["id"])
+    assert r.status_code == 201 and r.json()["appId"] == "aaaa0002", r.text
+
+
+@pytest.mark.parametrize(
+    ("setup", "imp", "status", "detail"),
+    [
+        ({"keys": ("e" * 32, "f" * 32)}, {"serviceId": "100"}, 409, "2 keys"),
+        ({"sigla": "OTRA"}, {"serviceId": "100"}, 422, "no tiene cuenta"),
+        ({"service": "200"}, {"serviceId": "100"}, 422, "no tiene esa application"),
+        ({}, {"serviceId": "404"}, 422, "inexistente"),
+        ({}, {"applicationId": "999"}, 422, "no tiene esa application"),
+        ({"app_id": "user key/1"}, {"serviceId": "100"}, 422, "sirva de label"),
+    ],
+)
+def test_import_rechazos_sin_escribir_en_vault(ts, setup, imp, status, detail):
+    c, parts, admins = ts
+    _legacy(admins, **setup)
+    r = _import(c, **imp)
+    assert r.status_code == status and detail in r.json()["detail"], r.text
+    assert PATH not in parts["vault"].data and "e" * 32 not in r.text
+
+
+def test_import_app_id_en_uso_409_y_cluster_sin_admin_422(ts):
+    c, _parts, admins = ts
+    _legacy(admins)
+    assert _import(c, serviceId="100").status_code == 201
+    r = _import(c, ns="sigla-otro-qa", serviceId="100")  # la misma application para otro namespace
+    assert r.status_code == 409 and "ya está en uso" in r.json()["detail"]
+    body = {"namespace": "sigla-x-qa", "sigla": "sigla", "tier": "nonprd", "environment": "QA", "tenant": TENANT}
+    r = c.post(
+        "/v1/consumers", json={**body, "importFrom3scale": {"cluster": "paas-prdpg", "serviceId": "1"}}, headers=idem()
+    )
+    assert r.status_code == 422 and "sin admin de 3scale" in r.json()["detail"]
+
+
+def test_import_sin_admins_501_y_sin_selector_400(client):
+    body = {"namespace": NS, "sigla": "sigla", "tier": "nonprd", "environment": "QA", "tenant": TENANT}
+    r = client.post(
+        "/v1/consumers", json={**body, "importFrom3scale": {"cluster": "paas-qas", "serviceId": "1"}}, headers=idem()
+    )
+    assert r.status_code == 501
+    r = client.post("/v1/consumers", json={**body, "importFrom3scale": {"cluster": "paas-qas"}}, headers=idem())
+    assert r.status_code == 400 and "applicationId, serviceId o systemName" in r.text
+    r = client.post("/v1/consumers", json={**body, "threescale": {"syncCredentials": True}}, headers=idem())
+    assert r.status_code == 400, "syncCredentials ya no existe (0.5.0)"
+
+
+def test_import_reintento_y_alta_despues_de_una_baja_reusan_la_reserva_propia(ts, monkeypatch):
+    """El app_id importado es fijo: si un alta reservó el índice y falló antes de escribir la credencial, el
+    reintento (con otra Idempotency-Key) no puede dar 409 para siempre. Una reserva del mismo namespace es propia; la
+    de otro, no."""
+    c, parts, admins = ts
+    _legacy(admins)
+    vault = parts["vault"]
+    real_write = vault.write
+
+    def falla_una_vez(path, data, cas):
+        if path == PATH:
+            monkeypatch.setattr(vault, "write", real_write)
+            raise RuntimeError("Vault no responde")
+        return real_write(path, data, cas)
+
+    monkeypatch.setattr(vault, "write", falla_una_vez)
+    with pytest.raises(RuntimeError):
+        _import(c, serviceId="100")
+    assert PATH not in vault.data and f"{INDEX}/app-ids/abcd1234" in vault.current, "quedó la reserva, sin credencial"
+    r = _import(c, serviceId="100")
+    assert r.status_code == 201 and r.json()["appId"] == "abcd1234", r.text
+    # baja y alta de nuevo del mismo namespace: la reserva sigue siendo suya
+    assert c.delete(f"/v1/consumers/{NS}?{QS}", headers=idem()).status_code == 200
+    r = _import(c, serviceId="100")
+    assert r.status_code == 201 and r.json()["state"] == "Active", r.text
+    # otro namespace con la misma application: 409 como siempre
+    r = _import(c, ns="sigla-otro-qa", serviceId="100")
+    assert r.status_code == 409 and "ya está en uso" in r.json()["detail"]

@@ -58,8 +58,9 @@ APICON_IT_VAULT_ADDR=... APICON_IT_ROLE_ID=... APICON_IT_SECRET_ID=... make it-v
 ```
 
 Configuración (`APICON_*`, lista completa en `src/api_consumers/config.py`): Vault (`VAULT_ADDR`, `VAULT_AUTH`
-`kubernetes|approle|token`, `VAULT_MOUNT`, `INDEX_PREFIX`), API Subscriber (`SUBSCRIBER_URL`, `SUBSCRIBER_TOKEN`),
-rotación (`ROTATION_POLL_S`, `ROTATION_STEP_TIMEOUT_S`, `ROTATION_DEADLINE_DAYS`), `THREESCALE_MODE`, `API_TOKENS`,
+`kubernetes|approle|token`, `VAULT_MOUNT`, `INDEX_PREFIX`), API Subscriber (`SUBSCRIBER_URL`, `SUBSCRIBER_TOKEN`; uno por ambiente con
+`SUBSCRIBER_ENDPOINTS`, 0.5.0), rotación (`ROTATION_POLL_S`, `ROTATION_STEP_TIMEOUT_S`, `ROTATION_DEADLINE_DAYS`),
+3scale (`THREESCALE_ADMINS`, `THREESCALE_TOKENS`), `API_TOKENS`,
 `CALLBACK_SECRET`. Lo sensible llega como archivos `APICON_<CAMPO>` montados desde el Secret `api-consumers-secrets`
 en `/etc/api-consumers/secrets`.
 
@@ -102,4 +103,4 @@ con el dueño. Detalle y variables en el encabezado del script.
 - **Rol de Vault con la policy de D3** en el kit `vault-dev` (hoy el lab usa el AppRole `apim-subscriber-nonprd`, que además puede leer) y en HCP.
 - **Índices fuera de `consumers/`** (`index/*`, como dice el ADR) cuando exista la policy propia.
 - **`Lease`** para más de una réplica: hoy las rotaciones en curso las avanza el proceso que las aceptó (o el que arranca, con `recover`).
-- **3scale:** applications de las suscripciones desde 0.3.0 (`/v1/consumers/{ns}/threescale/{cluster}/applications/{apiId}`); falta la prueba contra el admin real y la importación de credenciales existentes.
+- **3scale:** applications de las suscripciones desde 0.3.0 (`/v1/consumers/{ns}/threescale/{cluster}/applications/{apiId}`) e importación de la credencial en el alta (`importFrom3scale`, 0.5.0); falta la prueba de la importación contra un admin real.

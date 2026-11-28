@@ -1,0 +1,35 @@
+# Capa 7 — paas-svc-prdpg-consumers (27/11, plan; sin desplegar): la API Consumers de nonprod en el OCP de servicios
+# compartidos, namespace kuad-toolkit-low, para los tres API Subscriber de ese namespace (dev, int y qas):
+# subscriber_endpoints del Secret ({ambiente: {url, token}}, lo arma toolkit-env.py apply apis desde
+# SUBSCRIBER_ENDPOINTS del .conf). Mismo Vault corporativo de nonprod que paas-dev.
+#
+# La dirección del Vault NO va acá (este repo es público): la pasa bgal-api-sub/deploy/scripts/toolkit-up.sh desde
+# bgal-api-sub/deploy/env/paas-svc-prdpg-consumers.conf. El Secret api-consumers-secrets sale del .env: nunca a Git.
+# 28/11: namespace de Vault apim (admin/apim; lo creamos con el OK del 27/11): path único
+# <ambiente>/<ns>/secret-apim-<tenant>-v2 (un KV por ambiente), índices en el KV index y el AppRole
+# apim-consumers-nonprd. Stores vault-apim-v2-* (conviven con las de los despliegues anteriores).
+cluster:
+  name: paas-svc-prdpg
+  baseDomain: bancogalicia.com.ar
+  env: dev
+  domain: lab                                     # secretos por existingSecret (groups/domain-lab.yaml)
+  tier: lower
+  prod: false
+
+apiConsumers:
+  namespace: kuad-toolkit-low                     # se crea antes de desplegar; lo comparten los tres Subscribers
+  createNamespace: false
+  resources:                                      # ajustar al LimitRange del namespace nuevo, si tiene
+    requests: {cpu: 50m, memory: 256Mi}
+    limits: {memory: 257Mi}
+  vault:
+    addr: ""                                    # vacío a propósito: sin --set falla (no toma el Vault de lab de domain-lab)
+    auth: approle
+    namespace: admin/apim                         # toolkit-up.sh lo pasa igual desde VAULT_NAMESPACE del .conf
+    verify: true
+    credentialPathTemplate: "{env}/{namespace}/secret-apim-{tenant}-v2"   # sin /data/: el mount es el ambiente
+    mount: index                                  # índices de unicidad y rotaciones
+  eso:
+    consumerStore: {kind: ClusterSecretStore, name: vault-apim-v2-consumer-nonprd}
+  threescale:
+    injectTrustedCA: true                         # admins de 3scale de nonprod (CA NoProd Intermedia, H-29)

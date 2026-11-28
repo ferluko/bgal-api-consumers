@@ -14,7 +14,6 @@ from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from . import __version__
 from .config import Settings, get_settings
 from .errors import Problem
-from .integrations import build_threescale
 from .logging_setup import setup_logging
 from .models import ConsumerRequest, RotationAction, RotationRequest, ThreeScaleApplicationRequest
 from .service import Cred, Runner, Service
@@ -29,7 +28,6 @@ def build_service(s: Settings) -> Service:
         settings=s,
         vault=build_vault(s),
         subscriber=build_subscriber(s),
-        threescale=build_threescale(s),
         runner=Runner(s.worker_mode, s.worker_threads),
     )
 

@@ -43,23 +43,6 @@ def test_app_id_tomado_se_regenera(client, parts, monkeypatch):
     assert onboard(client, ns="sigla-otro-qa")["appId"] == "bbbbbbbb"  # aaaaaaaa ya estaba en el índice
 
 
-def test_import_desde_3scale_y_colision(client, parts):
-    parts["threescale"].apps[("galicia", "app-1")] = ("abcd1234", "f" * 32)
-    c = onboard(client, ns="sigla-migrada-qa", importFrom3scale={"tenant": "galicia", "applicationId": "app-1"})
-    assert c["appId"] == "abcd1234" and c["origin"] == "3scale-import"
-    parts["threescale"].apps[("galicia", "app-2")] = ("99999999", "f" * 32)  # misma key → H-03
-    body = {"namespace": "sigla-otra-qa", "sigla": "o", "tier": "nonprd", **Q}
-    imp = {"importFrom3scale": {"tenant": "galicia", "applicationId": "app-2"}}
-    r = client.post("/v1/consumers", json={**body, **imp}, headers=idem())
-    assert r.status_code == 409 and "colisiona" in r.json()["detail"]
-
-
-def test_sync_con_3scale(client, parts):
-    c = onboard(client, threescale={"syncCredentials": True, "tenant": "galicia", "applicationId": "app-9"})
-    assert c["credentialSync"]["threescale"] == "InSync"
-    assert parts["threescale"].apps[("galicia", "app-9")][0] == c["appId"]
-
-
 def test_get_y_secret_apim(client):
     assert client.get(f"/v1/consumers/{NS}?{QS}").status_code == 404
     c = onboard(client)

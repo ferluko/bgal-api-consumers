@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: API Consumers
-  version: 0.3.0-draft
+  version: 0.5.1-draft
   description: |
     Identidad del consumidor: una credencial (App ID / App Key) por namespace **y tenant**, su alta, baja y rotación.
     Es el **único** servicio que escribe credenciales en Vault, con la convención de DevSecOps (06/10 y 07/10):
@@ -33,8 +33,21 @@ info:
     nuevo (roll-forward). El avance lo hace la réplica líder (`Lease` de Kubernetes) a partir del estado en la
     metadata de Vault, con el callback del API Subscriber o, si no llega, por poll de su operación.
 
-    **Convivencia con 3scale:** si `threescale.syncCredentials` es true, alta, rotación y baja también actualizan
-    la aplicación de 3scale del proyecto.
+    **Migración desde 3scale (0.5.0, 27/11):** el alta con `importFrom3scale` toma el App ID y la App Key que el
+    consumidor ya usa en 3scale, de su application en el admin del `cluster` (cuenta de la sigla), y los escribe en
+    Vault: el consumidor no cambia de credencial y no se lee la credencial vieja de Vault. La application se elige por
+    `applicationId` o por el servicio (`serviceId`/`systemName`); una application ambigua o con más de una key da 409
+    (se unifica antes). Una reserva del índice del mismo namespace cuenta como propia (0.5.1): el reintento y el alta
+    después de una baja no dan 409. En la migración la dispara el API Subscriber (alta con `origin: 3scale`). Ya no existe
+    `threescale.syncCredentials`: la convivencia con 3scale son las applications de las suscripciones (abajo).
+
+    **Namespace de Vault `apim` (27/11):** con el namespace nuevo, el path es configuración
+    (`APICON_VAULT_NAMESPACE=admin/apim`, `APICON_CREDENTIAL_PATH_TEMPLATE={env}/{namespace}/secret-apim-{tenant}-v2`,
+    el índice en el KV `index`); la API no cambia.
+
+    **Un API Subscriber por ambiente (0.5.0):** una API Consumers por tier atiende a varios Subscribers
+    (`subscriber_endpoints` del Secret); la baja y la rotación van al del `environment` de la credencial. Un ambiente
+    sin Subscriber da 422.
 
     **Credenciales preexistentes (0.2.2):** una credencial que ya está en Vault pero que no creó ni importó la API
     Consumers (no tiene su metadata: ni `created_by` ni `app_id`) se informa como `Unmanaged`. Rotarla o darla de baja
@@ -84,12 +97,17 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Consumer' }
         '409':
-          description: El namespace ya tiene credencial (también si es preexistente y no administrada), o la key importada colisiona con la de otro consumidor.
+          description: El namespace ya tiene credencial (también si es preexistente y no administrada), la key importada colisiona con la de otro consumidor, el App ID importado ya está en uso, o (importFrom3scale) la cuenta tiene más de una application para ese servicio o la application tiene más de una key.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
         '422':
-          description: Payload inválido, o la misma Idempotency-Key con otro payload.
+          description: Payload inválido, la misma Idempotency-Key con otro payload, o (importFrom3scale) cluster sin admin de 3scale, sigla sin cuenta, servicio o application inexistentes.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '501':
+          description: importFrom3scale sin admins de 3scale configurados (APICON_THREESCALE_ADMINS).
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -411,17 +429,17 @@ components:
         servicenowRef: { type: string }
         importFrom3scale:
           type: object
-          description: Migración. Toma App ID/App Key existentes de 3scale en lugar de generarlos (el consumidor no cambia nada). Se verifica que la key no colisione con otra (índice key-fp).
+          description: |
+            Migración (0.5.0). Toma el App ID y la App Key de la application del consumidor en 3scale (cuenta de la
+            sigla, admin del `cluster`, tenant del pedido) en lugar de generarlos: el consumidor no cambia nada. Hace
+            falta `applicationId` o el servicio (`serviceId` o `systemName`). Se verifica que el App ID y la key no
+            estén en uso (índices app-ids y key-fp).
+          required: [cluster]
           properties:
-            tenant: { type: string }
-            applicationId: { type: string }
-        threescale:
-          type: object
-          description: Convivencia. Si syncCredentials es true, la credencial se escribe en la aplicación de 3scale del proyecto (alta, rotación y baja).
-          properties:
-            syncCredentials: { type: boolean, default: false }
-            tenant: { type: string }
-            applicationId: { type: string }
+            cluster: { type: string, example: paas-qas, description: 'Cluster de 3scale (su admin, de APICON_THREESCALE_ADMINS).' }
+            serviceId: { type: string, description: Id del servicio en ese admin. }
+            systemName: { type: string, description: system_name del servicio (igual en pg y mz). }
+            applicationId: { type: string, description: 'Id interno de la application en 3scale (manda sobre el servicio).' }
     Consumer:
       type: object
       properties:
@@ -431,7 +449,7 @@ components:
         owner: { type: string }
         environment: { type: string }
         tenant: { $ref: '#/components/schemas/Tenant' }
-        appId: { type: string, pattern: '^[a-f0-9]{8}$' }
+        appId: { type: string, pattern: '^[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$', description: 'Generado: 8 hex. Importado de 3scale: el application_id de allá (tiene que servir como label).' }
         vaultPath: { type: string, example: openshift-qas/sigla-x-qas/secret-apim-b2c-v2 }
         vaultProperty: { type: string, example: app_key_b2c, description: 'Clave del App Key dentro del secreto (nunca el valor).' }
         vaultVersion: { type: integer, description: Versión vigente de la key en KV v2 (current_version). }
@@ -445,6 +463,8 @@ components:
         rotationId: { type: string, description: 'Rotación en curso, si la hay.' }
         credentialSync:
           type: object
+          deprecated: true
+          description: Convivencia anterior a 0.5.0 (syncCredentials); siempre NotApplicable en las credenciales nuevas.
           properties:
             threescale: { $ref: '#/components/schemas/SyncState' }
         secretApimManifest: { type: string, description: ExternalSecret secret-apim-<tenant> renderizado (solo en la respuesta del alta). }
