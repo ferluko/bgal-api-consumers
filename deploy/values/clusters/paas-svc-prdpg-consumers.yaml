@@ -5,8 +5,9 @@
 #
 # La dirección del Vault NO va acá (este repo es público): la pasa bgal-api-sub/deploy/scripts/toolkit-up.sh desde
 # bgal-api-sub/deploy/env/paas-svc-prdpg-consumers.conf. El Secret api-consumers-secrets sale del .env: nunca a Git.
-# Con el namespace de Vault apim (cuando exista): vault.namespace admin/apim, credentialPathTemplate
-# "{env}/{namespace}/secret-apim-{tenant}-v2" y mount index.
+# 28/11: namespace de Vault apim (admin/apim; lo creamos con el OK del 27/11): path único
+# <ambiente>/<ns>/secret-apim-<tenant>-v2 (un KV por ambiente), índices en el KV index y el AppRole
+# apim-consumers-nonprd. Stores vault-apim-v2-* (conviven con las de los despliegues anteriores).
 cluster:
   name: paas-svc-prdpg
   baseDomain: bancogalicia.com.ar
@@ -24,11 +25,11 @@ apiConsumers:
   vault:
     addr: ""                                    # vacío a propósito: sin --set falla (no toma el Vault de lab de domain-lab)
     auth: approle
-    namespace: admin
+    namespace: admin/apim                         # toolkit-up.sh lo pasa igual desde VAULT_NAMESPACE del .conf
     verify: true
-    credentialPathTemplate: "openshift-{env}/{namespace}/data/secret-apim-{tenant}-v2"
-    mount: apim-nonprod
+    credentialPathTemplate: "{env}/{namespace}/secret-apim-{tenant}-v2"   # sin /data/: el mount es el ambiente
+    mount: index                                  # índices de unicidad y rotaciones
   eso:
-    consumerStore: {kind: ClusterSecretStore, name: vault-apim-consumer-nonprd}
+    consumerStore: {kind: ClusterSecretStore, name: vault-apim-v2-consumer-nonprd}
   threescale:
     injectTrustedCA: true                         # admins de 3scale de nonprod (CA NoProd Intermedia, H-29)
